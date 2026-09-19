@@ -1,0 +1,38 @@
+# Local Temporal dev stack for worker.py — recreated after the original
+# container was removed. Reuses the surviving data volume
+# (obs_tool_temporal_postgres_data) so workflow history is preserved.
+# Start:  docker compose -f docker-compose.temporal.yml up -d
+services:
+  temporal-postgres:
+    image: postgres:16
+    container_name: obstool_temporal_postgres
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    volumes:
+      - temporal_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  temporal:
+    image: temporalio/auto-setup:1.25.2
+    container_name: obstool_temporal
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=temporal-postgres
+
+volumes:
+  temporal_postgres_data:
+    external: true
+    name: obs_tool_temporal_postgres_data

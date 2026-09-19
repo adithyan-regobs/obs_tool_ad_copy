@@ -1,0 +1,25 @@
+name: deploy {{SERVICE_NAME}} to {{ENVIRONMENT}} {{CLUSTER_TYPE}} eks
+
+on:
+  push:
+    branches:
+      - {{BRANCH}}
+{{FOLDER_PATH_FILTER}}
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build, Push, and Notify
+    uses: Vance-Club/shared-lib/.github/workflows/build.yaml@{{SHARED_LIB_REF}}
+    with:
+      service_name:    {{SERVICE_NAME}}
+      organization:    {{ORGANIZATION}}
+      environment:     {{ENVIRONMENT}}
+      index:           "{{INDEX}}"
+      aws_region:      {{AWS_REGION}}
+      language:        {{LANGUAGE}}
+      node_version:    "{{NODE_VERSION}}"
+      build_path:      {{BUILD_PATH}}
+      dockerfile_path: {{DOCKERFILE_PATH}}
+      skip_slack:      {{SKIP_SLACK}}
+    secrets: inherit

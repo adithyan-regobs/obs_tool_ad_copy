@@ -1,0 +1,9 @@
+apiVersion: v2
+name: {{SERVICE_NAME}}
+description: {{SERVICE_NAME_TITLE}} service chart — thin wrapper over platform-base
+type: application
+version: 0.2.0
+dependencies:
+  - name: platform-base
+    version: {{PLATFORM_BASE_VERSION}}
+    repository: file://../../../library/platform-base

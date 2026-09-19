@@ -1,0 +1,80 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{JOB_NAME}}
+  namespace: {{NAMESPACE}}
+  labels:
+    app: model-downloader
+    model-slug: {{MODEL_SLUG}}
+    revision: {{SHORT_SHA}}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400   # auto-clean job after 24 h
+  template:
+    metadata:
+      labels:
+        app: model-downloader
+        model-slug: {{MODEL_SLUG}}
+    spec:
+      serviceAccountName: model-downloader-sa
+      restartPolicy: Never
+      containers:
+        - name: downloader
+          image: python:3.11-slim
+          command:
+            - /bin/sh
+            - -c
+            - |
+              pip install -q "huggingface_hub[hf_transfer]" && \
+              python3 - <<'PYEOF'
+              import os, sys
+              from huggingface_hub import snapshot_download
+
+              model_id  = "{{MODEL_ID}}"
+              revision  = "{{REVISION}}"
+              local_dir = "/models/{{EFS_PATH}}"
+              token     = os.environ.get("HF_TOKEN") or None
+
+              print(f"Downloading {model_id}@{revision} -> {local_dir}", flush=True)
+              snapshot_download(
+                  repo_id=model_id,
+                  revision=revision,
+                  local_dir=local_dir,
+                  token=token,
+                  ignore_patterns=["*.msgpack", "*.h5", "flax_model*", "tf_model*"],
+                  max_workers=4,
+              )
+              print("Download complete.", flush=True)
+              PYEOF
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{HF_TOKEN_SECRET_NAME}}
+                  key: HF_TOKEN
+                  optional: true     # public models work without a token
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "1"             # enable fast multi-part transfers when available
+          volumeMounts:
+            - name: model-store
+              mountPath: /models
+            - name: secrets-store
+              mountPath: /mnt/secrets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+            limits:
+              cpu: "4"
+              memory: "16Gi"
+      volumes:
+        - name: model-store
+          persistentVolumeClaim:
+            claimName: model-store-pvc
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{SECRET_PROVIDER_CLASS}}

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/ninto/Documents/regobs/experiments/langraph-default-tool-calling-poc/app/services/agent/**)"
+    ]
+  }
+}

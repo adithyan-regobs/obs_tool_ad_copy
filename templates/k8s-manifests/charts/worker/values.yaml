@@ -1,0 +1,23 @@
+# ------------------------------------------------------------------
+# {{SERVICE_NAME}}: chart overrides
+# Environment values: environments/<env>/<region>/{{SERVICE_NAME}}/values.yaml
+# Image tag is injected per-env by the GitOps image-tag flow.
+#
+# kind: worker flips platform-base defaults:
+#   - no Ingress, no ClusterIP Service, no PDB, no topology spread
+#   - probes use tcpSocket on containerPort (not HTTP healthCheckPath)
+#   - 180s termination grace + 30s preStop to drain in-flight messages
+# ------------------------------------------------------------------
+appName: {{SERVICE_NAME}}
+namespace: {{NAMESPACE}}
+kind: worker
+podType: worker
+containerPort: {{CONTAINER_PORT}}
+serviceMonitor:
+  enabled: false
+# Workers run a fixed replica count — no KEDA ScaledObject in any
+# environment (mirrors ECS workers, where autoscaling is likewise disabled).
+keda:
+  enabled: false
+podSecurityContext:       { runAsNonRoot: false }
+containerSecurityContext: { runAsNonRoot: false }

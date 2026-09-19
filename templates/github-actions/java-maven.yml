@@ -1,0 +1,133 @@
+name: Deploy {{SERVICE_NAME}} to {{ENVIRONMENT_NAME}}
+run-name: >-
+  ${{ github.event.inputs.triggered_by_user != '' &&
+      format('Deploy {{SERVICE_NAME}} to {{ENVIRONMENT_NAME}} (requested by {0})', github.event.inputs.triggered_by_user)
+      ||
+      format('Deploy {{SERVICE_NAME}} to {{ENVIRONMENT_NAME}}')
+  }}
+
+on:
+  push:
+    branches:
+      - {{BRANCH}}
+{{FOLDER_PATH_FILTER}}
+  workflow_dispatch:
+    inputs:
+      triggered_by_user:
+        description: "Email or name of the user triggering this workflow"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: {{AWS_REGION}}
+  ECR_REPOSITORY: {{ECR_REPOSITORY}}
+  SERVICE_NAME: {{ECS_SERVICE}}
+  ENVIRONMENT: {{ENVIRONMENT}}
+  ECS_CLUSTER: {{ECS_CLUSTER}}
+
+jobs:
+  build-and-deploy:
+    runs-on: [self-hosted, aws]
+{{GITHUB_ENVIRONMENT}}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.0
+        with:
+          role-to-assume: {{AWS_ROLE_ARN}}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: Devlift-${{ github.run_id }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up JDK {{JAVA_VERSION}}
+        uses: actions/setup-java@v4
+        with:
+          java-version: {{JAVA_VERSION}}
+          distribution: 'temurin'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Cache Maven Dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/*.xml') }}
+          restore-keys: ${{ runner.os }}-maven-
+
+      - name: maven-settings-xml-action
+        uses: whelk-io/maven-settings-xml-action@v20
+        with:
+          repositories: >
+            [
+              {
+                "id": "github",
+                "name": "java-commons",
+                "url": "https://maven.pkg.github.com/Vance-Club/java-commons",
+                "snapshots": {
+                  "enabled": "true"
+                }
+              }
+            ]
+          servers: >
+            [
+              {
+                "id": "github",
+                "username": "${{ secrets.PACKAGES_USER }}",
+                "password": "${{ secrets.PACKAGES_TOKEN }}"
+              }
+            ]
+          profiles: >
+            [
+              {
+                "id": "github"
+              }
+            ]
+          active_profiles: |
+            [
+              "github"
+            ]
+          output_file: $GITHUB_WORKSPACE/settings.xml
+
+      - name: Build JAR
+        run: |
+          ./mvnw clean package -Dmaven.test.skip --settings $GITHUB_WORKSPACE/settings.xml
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg JAR_FILE={{JAR_PATH}} \
+            --build-arg PROFILE=${{ env.ENVIRONMENT }} \
+{{CUSTOM_BUILD_ARGS}}            {{DOCKERFILE_FLAG}}-t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} .
+          docker tag ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ${{ env.ECR_REPOSITORY }}:latest
+          docker push ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker push ${{ env.ECR_REPOSITORY }}:latest
+          echo "image=${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}" >> $GITHUB_OUTPUT
+
+      - name: Force ECS Deployment
+        run: |
+          echo "Forcing new deployment for ECS service..."
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.SERVICE_NAME }} \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+          echo "Deployment triggered successfully!"
+          echo "Service: ${{ env.SERVICE_NAME }}"
+          echo "Cluster: ${{ env.ECS_CLUSTER }}"

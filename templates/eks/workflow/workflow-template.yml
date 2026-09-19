@@ -1,0 +1,141 @@
+name: Deploy {{SERVICE_NAME}} to {{ENVIRONMENT}}
+
+run-name: >-
+  ${{ github.event.inputs.triggered_by_user != '' &&
+      format('Deploy {{SERVICE_NAME}} to {{ENVIRONMENT}} (requested by {0})', github.event.inputs.triggered_by_user)
+      ||
+      format('Deploy {{SERVICE_NAME}} to {{ENVIRONMENT}}')
+  }}
+
+on:
+  push:
+    branches:
+      {{BRANCHES}}
+{{PATH_FILTERS}}
+  workflow_dispatch:
+    inputs:
+      triggered_by_user:
+        description: "Email or name of the user triggering this workflow"
+        required: true
+
+jobs:
+  load-config:
+    name: Load Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      config: ${{ steps.config.outputs.config }}
+      runner: ${{ steps.config.outputs.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Load configuration
+        id: config
+        run: |
+          echo "config={\"service_name\":\"{{SERVICE_NAME}}\", \"environment\":\"{{ENVIRONMENT}}\", \"language\":\"{{LANGUAGE}}\"}" >> $GITHUB_OUTPUT
+          echo "runner=ubuntu-latest" >> $GITHUB_OUTPUT
+
+  code-quality:
+    name: Code Quality Check
+    needs: [load-config]
+    runs-on: ${{ needs.load-config.outputs.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+{{CODE_QUALITY_STEPS}}
+
+  build:
+    name: Build Application
+    needs: [load-config, code-quality]
+    runs-on: ${{ needs.load-config.outputs.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+{{BUILD_STEPS}}
+
+      - name: Build application
+        run: |
+          echo "Building {{SERVICE_NAME}} for {{ENVIRONMENT}} environment..."
+{{BUILD_COMMANDS}}
+
+  docker-build:
+    name: Build Docker Image
+    needs: [load-config, build]
+    runs-on: ${{ needs.load-config.outputs.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          echo "Building Docker image for {{SERVICE_NAME}}..."
+          docker build -t ${{ github.repository }}:${{ github.sha }} .
+          docker tag ${{ github.repository }}:${{ github.sha }} ${{ github.repository }}:latest
+
+  security-scan:
+    name: Security Scan
+    needs: [docker-build]
+    runs-on: ${{ needs.load-config.outputs.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Trivy vulnerability scanner
+        run: |
+          echo "Scanning Docker image for vulnerabilities..."
+          # trivy image ${{ github.repository }}:latest
+
+{{SECURITY_STEPS}}
+
+  deploy:
+    name: Deploy to EKS
+    needs: [load-config, security-scan]
+    runs-on: ${{ needs.load-config.outputs.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: {{AWS_REGION}}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name {{EKS_CLUSTER_NAME}} --region {{AWS_REGION}}
+
+      - name: Deploy to EKS
+        run: |
+          echo "Deploying {{SERVICE_NAME}} to {{ENVIRONMENT}} environment in EKS cluster..."
+          # kubectl set image deployment/{{SERVICE_NAME}} {{SERVICE_NAME}}=${{ github.repository }}:${{ github.sha }}
+          # kubectl rollout status deployment/{{SERVICE_NAME}}
+
+  notify:
+    name: Send Notification
+    needs: [load-config, code-quality, build, security-scan, deploy]
+    if: always()
+    runs-on: ${{ needs.load-config.outputs.runner }}
+    steps:
+      - name: Send Slack notification
+        run: |
+          echo "Sending notification for {{SERVICE_NAME}} deployment..."
+          # Slack notification logic here

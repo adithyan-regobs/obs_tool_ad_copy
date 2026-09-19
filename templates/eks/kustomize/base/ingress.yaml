@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{SERVICE_NAME}}-ingress
+  namespace: {{NAMESPACE}}
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: {{HEALTH_ENDPOINT}}
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '30'
+    alb.ingress.kubernetes.io/success-codes: '200'
+{{CERTIFICATE_ANNOTATIONS}}
+{{ALB_GROUP_ANNOTATIONS}}
+spec:
+  ingressClassName: {{INGRESS_CLASS_NAME}}
+  rules:
+{{INGRESS_HOST_RULE}}
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{SERVICE_NAME}}-service
+            port:
+              number: {{CONTAINER_PORT}}

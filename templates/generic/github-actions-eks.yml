@@ -1,0 +1,84 @@
+name: Deploy {{SERVICE_NAME}} to {{ENVIRONMENT_NAME}}
+
+on:
+  push:
+    branches:
+      - {{BRANCH}}
+{{FOLDER_PATH_FILTER}}
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: {{AWS_REGION}}
+  ECR_REPOSITORY: {{ECR_REPOSITORY}}
+  SERVICE_NAME: {{SERVICE_NAME}}
+  ENVIRONMENT: {{ENVIRONMENT}}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+{{GITHUB_ENVIRONMENT}}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.0
+        with:
+          role-to-assume: {{AWS_ROLE_ARN}}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: Devlift-${{ github.run_id }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Create ECR repository if it doesn't exist
+        run: |
+          aws ecr describe-repositories --repository-names ${{ env.SERVICE_NAME }} --region ${{ env.AWS_REGION }} || \
+          aws ecr create-repository \
+            --repository-name ${{ env.SERVICE_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+{{CUSTOM_BUILD_ARGS}}            {{DOCKERFILE_FLAG}}-t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} .
+          docker tag ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ${{ env.ECR_REPOSITORY }}:latest
+          docker push ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker push ${{ env.ECR_REPOSITORY }}:latest
+          echo "image=${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}" >> $GITHUB_OUTPUT
+
+      - name: Configure kubectl for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name {{EKS_CLUSTER_NAME}}
+
+{{DEPLOY_STRATEGY}}
+
+      - name: Verify deployment
+        run: |
+          echo "Checking pod status..."
+          kubectl get pods --namespace={{NAMESPACE}}
+
+          echo "Waiting for ALB to provision..."
+          for i in {1..30}; do
+            ALB_URL=$(kubectl get ingress ${{ env.SERVICE_NAME }}-ingress --namespace={{NAMESPACE}} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [ -n "$ALB_URL" ]; then
+              echo "ALB provisioned successfully!"
+              echo "ALB URL: http://$ALB_URL"
+              exit 0
+            fi
+            echo "Waiting for ALB... ($i/30)"
+            sleep 10
+          done
+
+          echo "ALB provisioning timeout. Check ingress status:"
+          kubectl describe ingress ${{ env.SERVICE_NAME }}-ingress --namespace={{NAMESPACE}}

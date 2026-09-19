@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: devlift-gateway-ingress
+  namespace: {{NAMESPACE}}
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: {{ACM_CERT_ARN}}
+    alb.ingress.kubernetes.io/actions.fixed-response: '{"Type":"fixed-response","FixedResponseConfig":{"ContentType":"text/plain","StatusCode":"200","MessageBody":"OK"}}'
+spec:
+  ingressClassName: {{INGRESS_CLASS_NAME}}
+  rules:
+  - host: "{{SEED_HOST}}"
+    http:
+      paths:
+      - path: /healthz
+        pathType: Exact
+        backend:
+          service:
+            name: fixed-response
+            port:
+              number: 80

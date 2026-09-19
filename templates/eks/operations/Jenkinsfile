@@ -1,0 +1,125 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION     = '{{AWS_REGION}}'
+        EKS_CLUSTER    = '{{EKS_CLUSTER_NAME}}'
+        NAMESPACE      = '{{NAMESPACE}}'
+        SERVICE_NAME   = '{{SERVICE_NAME}}'
+        OBSTOOL_WEBHOOK_URL = '{{OBSTOOL_WEBHOOK_URL}}'
+        WEBHOOK_SECRET      = '{{WEBHOOK_SECRET}}'
+    }
+
+    options {
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Initialisation') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'"\${JOB_NAME}"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'"\${BUILD_URL}"'","commit_sha":"","stage":"initialisation"}' \
+                        || true
+                """
+                sh '''
+                    aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER}
+                '''
+            }
+        }
+
+        stage('{{STAGE_NAME}}') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'"\${JOB_NAME}"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'"\${BUILD_URL}"'","commit_sha":"","stage":"deploying"}' \
+                        || true
+                """
+                sh '''
+{{KUBECTL_COMMANDS}}
+                '''
+            }
+        }
+
+        stage('Verification') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'"\${JOB_NAME}"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'"\${BUILD_URL}"'","commit_sha":"","stage":"verification"}' \
+                        || true
+                """
+                sh '''
+                    echo "Current deployment status:"
+                    kubectl get deployment ${SERVICE_NAME} -n ${NAMESPACE} --ignore-not-found
+                    echo "Current pods:"
+                    kubectl get pods -l app=${SERVICE_NAME} -n ${NAMESPACE} --ignore-not-found
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                def buildStatus = currentBuild.currentResult ?: 'UNKNOWN'
+                def errMsg = ''
+
+                if (buildStatus != 'SUCCESS') {
+                    try {
+                        errMsg = sh(
+                            script: """
+                                kubectl get pods -l app=${SERVICE_NAME} -n ${NAMESPACE} -o json 2>/dev/null | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except:
+    sys.exit(0)
+errors = []
+for pod in data.get("items", []):
+    for cs in pod.get("status", {}).get("containerStatuses", []):
+        w = cs.get("state", {}).get("waiting", {})
+        reason = w.get("reason", "")
+        msg = w.get("message", "")
+        if reason:
+            errors.append(f"{reason}: {msg}" if msg else reason)
+if errors:
+    print("\\n".join(errors))
+else:
+    print("Service {{OPERATION}} failed. Check build logs for details.")
+' 2>/dev/null || echo 'Service {{OPERATION}} failed. Check build logs for details.'
+                            """,
+                            returnStdout: true
+                        ).trim()
+                    } catch (Exception e) {
+                        errMsg = "Service {{OPERATION}} failed. Check build logs for details."
+                    }
+                }
+
+                if (errMsg.length() > 2000) {
+                    errMsg = errMsg.substring(0, 2000) + '...(truncated)'
+                }
+                def payload = groovy.json.JsonOutput.toJson([
+                    job_name: env.JOB_NAME,
+                    build_number: env.BUILD_NUMBER as int,
+                    status: buildStatus,
+                    build_url: env.BUILD_URL ?: '',
+                    commit_sha: '',
+                    alb_url: '',
+                    error_message: errMsg
+                ])
+                sh """
+                    curl -s -X POST "${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: ${WEBHOOK_SECRET}" \
+                        -d '${payload}' || echo 'Webhook notification failed (non-fatal)'
+                """
+            }
+        }
+    }
+}

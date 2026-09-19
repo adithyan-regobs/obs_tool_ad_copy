@@ -1,0 +1,273 @@
+name: devlift.ai infra authorization
+model_file: ./devlift.fga
+
+# Aspora
+#  └── Core ────────────── Falcon
+#       ├── Payment            (separate product, used to prove isolation)
+#       │    ├── AWS
+#       │    │    ├── prod  → payments-api → secret db-key, secret stripe-key
+#       │    │    └── dev   → payments-api
+#       │    └── Azure
+#       │         └── prod  → ledger-api
+#       └── Wealth
+#            └── AWS
+#                 └── prod  → portfolio-api
+#
+# priya   tenant admin
+# raj     EM of Payment           → prod only, and DENIED on stripe-key
+# meera   owner of payments-api (prod)
+# arjun   developer, Core member
+# nina    EM of Wealth
+# vendor  external, JIT grant on db-key
+
+tuples:
+  # ---- people & groups ----
+  - user: user:priya
+    relation: admin
+    object: tenant:aspora
+  - user: user:arjun
+    relation: member
+    object: group:core-devs
+  - user: group:core-devs#member
+    relation: member
+    object: product:core
+
+  # ---- hierarchy ----
+  - user: tenant:aspora
+    relation: parent
+    object: product:core
+  - user: tenant:aspora
+    relation: parent
+    object: product:falcon
+  - user: product:core
+    relation: parent
+    object: resource_group:payment
+  - user: product:core
+    relation: parent
+    object: resource_group:wealth
+  - user: product:falcon
+    relation: parent
+    object: resource_group:falcon-core
+
+  - user: resource_group:payment
+    relation: parent
+    object: cloud_account:payment-aws
+  - user: resource_group:payment
+    relation: parent
+    object: cloud_account:payment-azure
+  - user: resource_group:wealth
+    relation: parent
+    object: cloud_account:wealth-aws
+
+  - user: cloud_account:payment-aws
+    relation: parent
+    object: environment:payment-aws-prod
+  - user: cloud_account:payment-aws
+    relation: parent
+    object: environment:payment-aws-dev
+  - user: cloud_account:payment-azure
+    relation: parent
+    object: environment:payment-azure-prod
+  - user: cloud_account:wealth-aws
+    relation: parent
+    object: environment:wealth-aws-prod
+
+  - user: environment:payment-aws-prod
+    relation: parent
+    object: service:payments-api-prod
+  - user: environment:payment-aws-dev
+    relation: parent
+    object: service:payments-api-dev
+  - user: environment:payment-azure-prod
+    relation: parent
+    object: service:ledger-api-prod
+  - user: environment:wealth-aws-prod
+    relation: parent
+    object: service:portfolio-api-prod
+
+  - user: service:payments-api-prod
+    relation: parent
+    object: secret:payments-db-key
+  - user: service:payments-api-prod
+    relation: parent
+    object: secret:payments-stripe-key
+
+  # ---- roles ----
+  # raj is EM of Payment...
+  - user: user:raj
+    relation: em
+    object: resource_group:payment
+  # ...and EM-of-Payment is admin of the PROD envs only. No such tuple exists
+  # for payment-aws-dev, which is exactly why raj has no admin there.
+  - user: resource_group:payment#em
+    relation: admin
+    object: environment:payment-aws-prod
+  - user: resource_group:payment#em
+    relation: admin
+    object: environment:payment-azure-prod
+
+  - user: user:nina
+    relation: em
+    object: resource_group:wealth
+  - user: resource_group:wealth#em
+    relation: admin
+    object: environment:wealth-aws-prod
+
+  # service owner
+  - user: user:meera
+    relation: owner
+    object: service:payments-api-prod
+
+  # ---- explicit denial on the super-sensitive key ----
+  - user: user:raj
+    relation: denied
+    object: secret:payments-stripe-key
+
+  # ---- time-boxed break-glass for an external vendor ----
+  - user: user:vendor
+    relation: direct_reader
+    object: secret:payments-db-key
+    condition:
+      name: active_jit_grant
+      context:
+        grant_expires_at: "2026-08-01T00:00:00Z"
+
+tests:
+  - name: EM has full access to prod
+    check:
+      - user: user:raj
+        object: service:payments-api-prod
+        assertions:
+          can_view: true
+          can_deploy: true
+          can_configure: true
+          can_delete: true
+
+  - name: EM has no access to non-prod environments
+    # The EM userset is wired to prod envs only; dev was never linked.
+    check:
+      - user: user:raj
+        object: service:payments-api-dev
+        assertions:
+          can_view: false
+          can_deploy: false
+          can_configure: false
+
+  - name: EM reaches prod across both clouds
+    check:
+      - user: user:raj
+        object: service:ledger-api-prod
+        assertions:
+          can_deploy: true
+
+  - name: EM of one resource group cannot touch another
+    check:
+      - user: user:raj
+        object: service:portfolio-api-prod
+        assertions:
+          can_view: false
+          can_deploy: false
+      - user: user:nina
+        object: service:payments-api-prod
+        assertions:
+          can_view: false
+
+  - name: service owner has full access to their own service
+    check:
+      - user: user:meera
+        object: service:payments-api-prod
+        assertions:
+          can_view: true
+          can_deploy: true
+          can_configure: true
+          can_delete: true
+
+  - name: service owner is scoped to that service alone
+    check:
+      - user: user:meera
+        object: service:ledger-api-prod
+        assertions:
+          can_view: false
+          can_deploy: false
+
+  - name: explicit deny beats inherited admin on a sensitive secret
+    # raj is admin of the service and would inherit read. The deny wins.
+    check:
+      - user: user:raj
+        object: secret:payments-db-key
+        assertions:
+          can_read: true
+      - user: user:raj
+        object: secret:payments-stripe-key
+        assertions:
+          can_read: false
+          can_write: false
+
+  - name: deny is per-secret, not per-service
+    check:
+      - user: user:meera
+        object: secret:payments-stripe-key
+        assertions:
+          can_read: true
+
+  - name: tenant admin reaches everything
+    check:
+      - user: user:priya
+        object: service:portfolio-api-prod
+        assertions:
+          can_delete: true
+      - user: user:priya
+        object: secret:payments-stripe-key
+        assertions:
+          can_read: true
+
+  - name: product membership grants read but never deploy
+    check:
+      - user: user:arjun
+        object: service:payments-api-dev
+        assertions:
+          can_view: true
+          can_deploy: false
+          can_configure: false
+
+  - name: JIT grant is live before it expires
+    check:
+      - user: user:vendor
+        object: secret:payments-db-key
+        context:
+          current_time: "2026-07-30T10:00:00Z"
+        assertions:
+          can_read: true
+
+  - name: JIT grant expires on its own with no revocation write
+    check:
+      - user: user:vendor
+        object: secret:payments-db-key
+        context:
+          current_time: "2026-08-02T10:00:00Z"
+        assertions:
+          can_read: false
+
+  - name: vendor never had access to any other secret
+    check:
+      - user: user:vendor
+        object: secret:payments-stripe-key
+        context:
+          current_time: "2026-07-30T10:00:00Z"
+        assertions:
+          can_read: false
+
+  - name: which services can this user deploy to
+    # Powers a filtered service list in the UI without checking row by row.
+    list_objects:
+      - user: user:raj
+        type: service
+        assertions:
+          can_deploy:
+            - service:payments-api-prod
+            - service:ledger-api-prod
+      - user: user:meera
+        type: service
+        assertions:
+          can_deploy:
+            - service:payments-api-prod

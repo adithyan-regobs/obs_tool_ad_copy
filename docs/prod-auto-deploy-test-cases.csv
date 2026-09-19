@@ -1,0 +1,15 @@
+ID,Test Case,What to do,What should happen,Status
+1,Happy path — one infra resource (S3),Create a bucket -> Deploy,Feature PR -> merge to stage -> promotion PR -> plan -> approve -> apply -> gate clean -> merged to main -> DEPLOYED,Partially passed (through apply)
+2,Happy path — EKS service batch,Change service settings (+ variables + kong if staged) -> Deploy,Service child runs the promotion pipeline; variables and kong follow in order; whole batch completes as one deployment,Blocked (wrong dir registered — gate refused merge)
+3,Existing human content already on stage,Merge a manual prod-path change to stage first; then deploy,Our plan/apply succeed; gate sees the human path -> does NOT merge; alert names the blocking file; PR stays open,Pending
+4,Human edits our files mid-deployment,While the deploy waits merge a manual change touching our dir,Detected within 30s -> deployment aborted with alert,Pending
+5,Two DevLift prod deploys at once,Start deploy A; immediately start deploy B,B waits for the promotion key; runs after A completes; both succeed,Pending
+6,Plan fails -> park,Deploy something that breaks plan,2 retries then PARKED; key released so others can deploy; own dir kept; alert with recovery steps,Passed
+7,Apply fails -> park,Deploy something that breaks apply,Same park behavior as plan failure,Passed
+8,Parked deploy resumes,Fix the cause; comment atlantis plan -p <project> on the PR,Wakes within 2 min; re-queues; re-plans its own project; continues to apply and merge,Pending (main remaining test)
+9,Human merges the promotion PR before our apply,Merge the PR while the deploy is parked or waiting (nothing applied for our project),Deployment marked FAILED with recovery instructions; queue item back to APPROVED; no stuck spinner,Passed
+9a,Human fixes + applies + merges while we are parked,Fix the cause outside our dirs; run plan and apply manually; then merge the PR,No resume needed — merge detected; adoption check passes (apply evidence for our project + no manual commit on our dirs) -> DEPLOYED; parked stage closed,Pending
+9b,Human merges while our apply is still running,Merge the PR in the window between our apply comment and its result,If our apply already succeeded -> adopted -> DEPLOYED. If still mid-apply -> currently reports merged_before_apply (false alarm; needs grace window for in-flight apply),Pending — known gap
+10,Human closes the promotion PR,Close the PR during a wait,Deployment FAILED cleanly; next deploy recreates the PR,Passed
+11,Stage regression — nothing changed,Run a normal stage deploy (EKS + one infra),Exactly the old behavior: plan/apply/merge on the feature PR; no promotion PR; no track rows,Pending
+12,Prod variables-only regression,Deploy only staged variables for a prod service,No promotion involvement; behaves exactly as before this feature,Pending

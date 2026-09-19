@@ -1,0 +1,8 @@
+apiVersion: eks.amazonaws.com/v1
+kind: IngressClassParams
+metadata:
+  name: {{INGRESS_CLASS_NAME}}
+spec:
+  scheme: {{ALB_SCHEME}}
+{{ALB_GROUP_BLOCK}}
+{{CERTIFICATE_ARNS_BLOCK}}

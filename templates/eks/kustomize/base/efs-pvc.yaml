@@ -1,0 +1,13 @@
+# model-download-ns: READ-WRITE — download jobs write weights here
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-store-pvc
+  namespace: model-download-ns   # hardcoded — only download jobs write to EFS
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 500Gi

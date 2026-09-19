@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{JOB_NAME}}
+  namespace: {{NAMESPACE}}
+  labels:
+    app: devlift-job
+    operation: create-database
+    environment: {{ENVIRONMENT}}
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: job
+          image: postgres:15
+          command: ["sh", "-c"]
+          args:
+            - |
+              psql -h "$SERVER_HOST" -p "$SERVER_PORT" -U "$PG_USER" postgres \
+                -c "CREATE DATABASE \"{{DATABASE_NAME}}\""
+          env:
+            - name: PGPASSWORD
+              value: "{{PASSWORD}}"
+            - name: SERVER_HOST
+              value: "{{SERVER_HOST}}"
+            - name: SERVER_PORT
+              value: "{{PORT}}"
+            - name: PG_USER
+              value: "{{USERNAME}}"

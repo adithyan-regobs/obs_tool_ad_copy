@@ -1,0 +1,213 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION     = '{{AWS_REGION}}'
+        EKS_CLUSTER    = '{{EKS_CLUSTER_NAME}}'
+        NAMESPACE      = '{{NAMESPACE}}'
+        RELEASE_NAME   = '{{RELEASE_NAME}}'
+        HELM_REPO_NAME = '{{HELM_REPO_NAME}}'
+        HELM_REPO_URL  = '{{HELM_REPO_URL}}'
+        HELM_CHART     = '{{HELM_CHART}}'
+        ENVIRONMENT    = '{{ENVIRONMENT}}'
+        OBSTOOL_WEBHOOK_URL = '{{OBSTOOL_WEBHOOK_URL}}'
+        WEBHOOK_SECRET      = '{{WEBHOOK_SECRET}}'
+    }
+
+    options {
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Initialisation') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"initialisation"}' \
+                        || true
+                """
+                sh '''
+                    if command -v helm > /dev/null 2>&1; then
+                        echo "Helm already installed: $(helm version --short)"
+                    else
+                        echo "Helm not found, installing..."
+                        curl -fsSL https://get.helm.sh/helm-v3.16.0-linux-amd64.tar.gz -o /tmp/helm.tar.gz
+                        tar -xzf /tmp/helm.tar.gz -C /tmp
+                        mv /tmp/linux-amd64/helm /usr/local/bin/helm
+                        chmod +x /usr/local/bin/helm
+                        echo "Helm installed: $(helm version --short)"
+                    fi
+                '''
+                sh '''
+                    aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER}
+                '''
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"checkout"}' \
+                        || true
+                """
+                sh '''
+                    if kubectl get storageclass gp3 > /dev/null 2>&1; then
+                        echo "StorageClass gp3 already exists, skipping."
+                    else
+                        echo "Creating StorageClass gp3 for EKS Auto Mode..."
+                        kubectl apply -f - <<'SC_EOF'
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.eks.amazonaws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+SC_EOF
+                        echo "StorageClass gp3 created."
+                    fi
+                '''
+                sh '''
+                    helm repo add ${HELM_REPO_NAME} ${HELM_REPO_URL}
+                    helm repo update
+                '''
+            }
+        }
+
+        stage('Building') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"building"}' \
+                        || true
+                """
+                sh '''
+                    mkdir -p helm-values
+                    cat > helm-values/values.yaml <<'VALUES_EOF'
+{{VALUES_YAML_BLOCK}}
+VALUES_EOF
+                '''
+            }
+        }
+
+        stage('Deploying') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"deploying"}' \
+                        || true
+                """
+                sh '''
+                    helm upgrade --install ${RELEASE_NAME} ${HELM_CHART} \
+                        --namespace ${NAMESPACE} \
+                        --create-namespace \
+                        -f helm-values/values.yaml \
+                        --wait \
+                        --timeout 20m
+                '''
+            }
+        }
+
+        stage('Verification') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"verification"}' \
+                        || true
+                """
+                sh '''
+                    echo "Release status:"
+                    helm status ${RELEASE_NAME} --namespace ${NAMESPACE}
+                    echo "Pods:"
+                    kubectl get pods --namespace=${NAMESPACE}
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                def buildStatus = currentBuild.currentResult ?: 'UNKNOWN'
+                env.DEPLOY_ERROR = env.DEPLOY_ERROR ?: ''
+
+                // On failure, diagnose pod issues
+                if (buildStatus != 'SUCCESS') {
+                    try {
+                        env.DEPLOY_ERROR = sh(
+                            script: """
+                                kubectl get pods -n ${NAMESPACE} -o json 2>/dev/null | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except:
+    sys.exit(0)
+errors = []
+for pod in data.get("items", []):
+    name = pod["metadata"]["name"]
+    for cs in pod.get("status", {}).get("containerStatuses", []):
+        w = cs.get("state", {}).get("waiting", {})
+        t = cs.get("lastState", {}).get("terminated", {})
+        reason = w.get("reason", "")
+        msg = w.get("message", "")
+        if reason in ("CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError", "RunContainerError"):
+            errors.append(f"{reason}: {msg}" if msg else reason)
+        if t.get("reason") == "OOMKilled":
+            limits = ""
+            for c in pod.get("spec", {}).get("containers", []):
+                mem = c.get("resources", {}).get("limits", {}).get("memory", "")
+                if mem:
+                    limits = f" (memory limit: {mem})"
+            errors.append(f"OOMKilled{limits}: Container ran out of memory. Increase memory in service settings.")
+if errors:
+    print("\\n".join(errors))
+else:
+    print("Helm deployment failed. Check build logs for details.")
+' 2>/dev/null || echo 'Helm deployment failed. Check build logs for details.'
+                            """,
+                            returnStdout: true
+                        ).trim()
+                    } catch (Exception e) {
+                        env.DEPLOY_ERROR = "Helm deployment failed. Check build logs for details."
+                    }
+                }
+
+                def errMsg = env.DEPLOY_ERROR ?: ''
+                if (errMsg.length() > 2000) {
+                    errMsg = errMsg.substring(0, 2000) + '...(truncated)'
+                }
+                def payload = groovy.json.JsonOutput.toJson([
+                    job_name: env.JOB_NAME,
+                    build_number: env.BUILD_NUMBER as int,
+                    status: buildStatus,
+                    build_url: env.BUILD_URL ?: '',
+                    commit_sha: '',
+                    alb_url: '',
+                    error_message: errMsg
+                ])
+                sh """
+                    curl -s -X POST "${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: ${WEBHOOK_SECRET}" \
+                        -d '${payload}' || echo 'Webhook notification failed (non-fatal)'
+                """
+            }
+        }
+    }
+}

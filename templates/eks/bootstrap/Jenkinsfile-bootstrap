@@ -1,0 +1,128 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'GITHUB_TOKEN',       defaultValue: '', description: 'GitHub App installation token')
+        string(name: 'OBS_TOOL_RUN_CODE',  defaultValue: '', description: 'ObsTool run code for webhook correlation')
+    }
+
+    environment {
+        AWS_REGION      = '{{AWS_REGION}}'
+        EKS_CLUSTER     = '{{EKS_CLUSTER_NAME}}'
+        NAMESPACE       = '{{NAMESPACE}}'
+        INFRA_REPO      = '{{INFRA_REPO}}'
+        INFRA_BRANCH    = '{{INFRA_BRANCH}}'
+        MANIFESTS_PATH  = '{{MANIFESTS_PATH}}'
+        OBSTOOL_WEBHOOK_URL = '{{OBSTOOL_WEBHOOK_URL}}'
+        WEBHOOK_SECRET      = '{{WEBHOOK_SECRET}}'
+    }
+
+    options {
+        skipDefaultCheckout()
+        timeout(time: 15, unit: 'MINUTES')
+    }
+
+    stages {
+
+        stage('Initialisation') {
+            steps {
+                cleanWs()
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","stage":"initialisation","service_type":"BOOTSTRAP","run_code":"${params.OBS_TOOL_RUN_CODE}"}' \
+                        || true
+                """
+                sh """
+                    git clone --depth=1 --branch \${INFRA_BRANCH} \\
+                        https://x-access-token:${params.GITHUB_TOKEN}@github.com/\${INFRA_REPO}.git infra-repo
+                """
+                sh "aws eks update-kubeconfig --region \${AWS_REGION} --name \${EKS_CLUSTER}"
+            }
+        }
+
+        stage('Apply Bootstrap') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","stage":"apply_bootstrap","service_type":"BOOTSTRAP","run_code":"${params.OBS_TOOL_RUN_CODE}"}' \
+                        || true
+                """
+                sh """
+                    kubectl apply -f infra-repo/\${MANIFESTS_PATH}/namespace.yaml
+                    kubectl apply -f infra-repo/\${MANIFESTS_PATH}/ingressclass.yaml
+                    kubectl apply -f infra-repo/\${MANIFESTS_PATH}/seed-ingress.yaml
+                    echo "Bootstrap manifests applied."
+                """
+            }
+        }
+
+        stage('Wait for ALB') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","stage":"wait_for_alb","service_type":"BOOTSTRAP","run_code":"${params.OBS_TOOL_RUN_CODE}"}' \
+                        || true
+                """
+                script {
+                    def maxAttempts = 24   // 24 × 15s = 6 minutes
+                    def pollInterval = 15
+                    def albHostname = ''
+
+                    for (int i = 0; i < maxAttempts; i++) {
+                        albHostname = sh(
+                            script: """
+                                kubectl get ingress devlift-gateway-ingress \\
+                                    -n \${NAMESPACE} \\
+                                    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' \\
+                                    2>/dev/null || true
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        if (albHostname) {
+                            echo "ALB provisioned: ${albHostname}"
+                            env.ALB_HOSTNAME = albHostname
+                            break
+                        }
+
+                        if (i < maxAttempts - 1) {
+                            echo "Waiting for ALB hostname (attempt ${i + 1}/${maxAttempts})…"
+                            sleep pollInterval
+                        }
+                    }
+
+                    if (!env.ALB_HOSTNAME) {
+                        error("ALB hostname did not appear after ${maxAttempts * pollInterval}s")
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            sh """
+                curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                    -H 'Content-Type: application/json' \
+                    -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                    -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"SUCCESS","build_url":"'\"\${BUILD_URL}\"'","alb_url":"'\"\${ALB_HOSTNAME}\"'","service_type":"BOOTSTRAP","run_code":"${params.OBS_TOOL_RUN_CODE}"}' \
+                    || true
+            """
+        }
+        failure {
+            sh """
+                curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                    -H 'Content-Type: application/json' \
+                    -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                    -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"FAILURE","build_url":"'\"\${BUILD_URL}\"'","service_type":"BOOTSTRAP","run_code":"${params.OBS_TOOL_RUN_CODE}"}' \
+                    || true
+            """
+        }
+    }
+}

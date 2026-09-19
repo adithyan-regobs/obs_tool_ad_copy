@@ -1,0 +1,278 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'GITHUB_TOKEN',          defaultValue: '', description: 'GitHub App installation token')
+        string(name: 'OBS_TOOL_RUN_CODE',     defaultValue: '', description: 'ObsTool run code for webhook correlation')
+        string(name: 'RESOURCE_TYPE',         defaultValue: '', description: 's3 | sqs | dynamodb | iam')
+        string(name: 'RESOURCE_CODE',         defaultValue: '', description: 'INFRA_<TYPE>_<id>; for iam: IAM_<tenant>_<env>')
+        string(name: 'TENANT',                defaultValue: '', description: 'Tenant code')
+        string(name: 'ENVIRONMENT',           defaultValue: '', description: 'Target environment')
+        string(name: 'TERRAGRUNT_PATH',       defaultValue: '', description: 'Path to resource directory inside the tenant infra repo')
+        string(name: 'INFRA_REPO',            defaultValue: '', description: 'owner/repo of the tenant infra repo')
+        string(name: 'INFRA_BRANCH',          defaultValue: 'main', description: 'Branch of the tenant infra repo')
+        string(name: 'BASE_INFRA_ORG',        defaultValue: '', description: 'Org of the base infra repo (layers source)')
+        string(name: 'BASE_INFRA_REPO',       defaultValue: '', description: 'Repo of the base infra repo (layers source)')
+        string(name: 'BASE_INFRA_BRANCH',     defaultValue: 'main', description: 'Branch of the base infra repo')
+        string(name: 'ROLE_ARN',              defaultValue: '', description: 'Tenant default-role ARN (resource pipelines only)')
+        string(name: 'EXPECTED_ACTIONS',      defaultValue: '', description: 'Comma-separated IAM actions to verify')
+        string(name: 'EXPECTED_RESOURCE_ARNS', defaultValue: '', description: 'Comma-separated resource ARNs to verify')
+    }
+
+    environment {
+        OBSTOOL_WEBHOOK_URL = '{{OBSTOOL_WEBHOOK_URL}}'
+        WEBHOOK_SECRET      = '{{WEBHOOK_SECRET}}'
+        // Mirror params into env so shell can reference them as $VAR.
+        // ``\${params.X}`` lands in /bin/sh as the literal text ``${params.X}``
+        // and the dot triggers ``bad substitution`` — env-var refs avoid that.
+        INFRA_REPO             = "${params.INFRA_REPO}"
+        INFRA_BRANCH           = "${params.INFRA_BRANCH}"
+        GITHUB_TOKEN           = "${params.GITHUB_TOKEN}"
+        BASE_INFRA_ORG         = "${params.BASE_INFRA_ORG}"
+        BASE_INFRA_REPO        = "${params.BASE_INFRA_REPO}"
+        BASE_INFRA_BRANCH      = "${params.BASE_INFRA_BRANCH}"
+        OBS_TOOL_RUN_CODE      = "${params.OBS_TOOL_RUN_CODE}"
+        RESOURCE_TYPE          = "${params.RESOURCE_TYPE}"
+        RESOURCE_CODE          = "${params.RESOURCE_CODE}"
+        TENANT                 = "${params.TENANT}"
+        ENVIRONMENT            = "${params.ENVIRONMENT}"
+        TERRAGRUNT_PATH        = "${params.TERRAGRUNT_PATH}"
+        ROLE_ARN               = "${params.ROLE_ARN}"
+        EXPECTED_ACTIONS       = "${params.EXPECTED_ACTIONS}"
+        EXPECTED_RESOURCE_ARNS = "${params.EXPECTED_RESOURCE_ARNS}"
+    }
+
+    options {
+        skipDefaultCheckout()
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    stages {
+
+        stage('Cloning Repo') {
+            steps {
+                cleanWs()
+                sh """
+                    curl -sS -X POST --max-time 30 --retry 5 --retry-delay 3 --retry-connrefused "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","stage":"cloning_repo","service_type":"INFRA_APPLY","run_code":"'\"\${OBS_TOOL_RUN_CODE}\"'"}' \
+                        || true
+                """
+                sh '''
+                    set -e
+                    git clone --depth=1 --branch "${INFRA_BRANCH}" \
+                        "https://x-access-token:${GITHUB_TOKEN}@github.com/${INFRA_REPO}.git" tenant
+                    git clone --depth=1 --branch "${BASE_INFRA_BRANCH}" \
+                        "https://x-access-token:${GITHUB_TOKEN}@github.com/${BASE_INFRA_ORG}/${BASE_INFRA_REPO}.git" base
+
+                    # Layer base over tenant: everything from base except its own
+                    # environment/ and .git. Tenant's environment/{tenant}/... files
+                    # remain authoritative; layers/, versions.hcl, root.hcl, etc.
+                    # always come fresh from the base infra repo at apply time.
+                    cd base
+                    for item in $(ls -A); do
+                        case "$item" in
+                            environment|.git) continue ;;
+                        esac
+                        cp -rf "$item" "../tenant/$item"
+                    done
+                    cd ..
+                '''
+            }
+        }
+
+        stage('Terragrunt Init') {
+            steps {
+                sh """
+                    curl -sS -X POST --max-time 30 --retry 5 --retry-delay 3 --retry-connrefused "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","stage":"terragrunt_init","service_type":"INFRA_APPLY","run_code":"'\"\${OBS_TOOL_RUN_CODE}\"'"}' \
+                        || true
+                """
+                dir("tenant/${params.TERRAGRUNT_PATH}") {
+                    // --backend-bootstrap auto-creates the remote-state S3 bucket
+                    // (and the DynamoDB lock table) on first apply for a new
+                    // tenant. --non-interactive auto-confirms the y/n prompt
+                    // (Jenkins agent has no TTY, so without this terragrunt
+                    // immediately EOFs on the prompt). Idempotent on subsequent
+                    // applies for tenants whose bucket already exists.
+                    sh 'terragrunt init -upgrade --backend-bootstrap --non-interactive -lock-timeout=5m'
+                }
+            }
+        }
+
+        stage('Applying') {
+            steps {
+                script {
+                    def applyStage = params.RESOURCE_TYPE == 'iam' ? 'applying_iam' : 'applying_infra'
+                    sh """
+                        curl -sS -X POST --max-time 30 --retry 5 --retry-delay 3 --retry-connrefused "\${OBSTOOL_WEBHOOK_URL}" \
+                            -H 'Content-Type: application/json' \
+                            -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                            -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","stage":"${applyStage}","service_type":"INFRA_APPLY","run_code":"'\"\${OBS_TOOL_RUN_CODE}\"'"}' \
+                            || true
+                    """
+                }
+                dir("tenant/${params.TERRAGRUNT_PATH}") {
+                    retry(2) {
+                        sh "terragrunt apply -auto-approve --non-interactive -lock-timeout=5m"
+                    }
+                }
+            }
+        }
+
+        stage('Capturing Outputs') {
+            when { expression { return params.RESOURCE_TYPE != 'iam' } }
+            steps {
+                sh """
+                    curl -sS -X POST --max-time 30 --retry 5 --retry-delay 3 --retry-connrefused "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","stage":"capturing_outputs","service_type":"INFRA_APPLY","run_code":"'\"\${OBS_TOOL_RUN_CODE}\"'"}' \
+                        || true
+                """
+                script {
+                    def outputs = ''
+                    dir("tenant/${params.TERRAGRUNT_PATH}") {
+                        outputs = sh(
+                            script: "terragrunt output -json 2>/dev/null || echo '{}'",
+                            returnStdout: true,
+                        ).trim()
+                    }
+                    env.RESOURCE_OUTPUTS = outputs
+                    // Best-effort ARN extraction — covers common output names across resource modules
+                    env.RESOURCE_ARN = sh(
+                        script: """echo '${outputs.replace("'", "'\\''")}' | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    canonical = ("arn", "bucket_arn", "queue_arn", "table_arn",
+                 "s3_bucket_arn", "sqs_queue_arn", "dynamodb_table_arn",
+                 "replication_group_arn")
+    for key in canonical:
+        if key in data and isinstance(data[key], dict) and data[key].get("value"):
+            print(data[key]["value"])
+            sys.exit(0)
+    for k, v in data.items():
+        if not k.endswith("_arn"):
+            continue
+        if not isinstance(v, dict) or not v.get("value"):
+            continue
+        if "dlq" in k or k.startswith("user_"):
+            continue
+        print(v["value"])
+        sys.exit(0)
+except Exception:
+    pass
+print("")
+' || echo ''""",
+                        returnStdout: true,
+                    ).trim()
+                }
+            }
+        }
+
+        stage('Verifying Permissions') {
+            when { expression { return params.RESOURCE_TYPE != 'iam' } }
+            steps {
+                sh """
+                    curl -sS -X POST --max-time 30 --retry 5 --retry-delay 3 --retry-connrefused "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","stage":"verifying_permissions","service_type":"INFRA_APPLY","run_code":"'\"\${OBS_TOOL_RUN_CODE}\"'"}' \
+                        || true
+                """
+                script {
+                    if (!params.ROLE_ARN || !params.EXPECTED_ACTIONS || !params.EXPECTED_RESOURCE_ARNS) {
+                        echo "Skipping permission verification — verification params not provided"
+                        return
+                    }
+                    def actions = params.EXPECTED_ACTIONS.split(',').collect { it.trim() }.findAll { it }.join(' ')
+                    def arns = params.EXPECTED_RESOURCE_ARNS.split(',').collect { it.trim() }.findAll { it }.join(' ')
+                    def maxAttempts = 30
+                    def pollInterval = 5
+                    def allowed = false
+                    def lastDenied = ''
+
+                    for (int i = 0; i < maxAttempts; i++) {
+                        def denied = sh(
+                            script: """
+                                aws iam simulate-principal-policy \\
+                                    --policy-source-arn '${params.ROLE_ARN}' \\
+                                    --action-names ${actions} \\
+                                    --resource-arns ${arns} \\
+                                    --query 'EvaluationResults[?EvalDecision!=`allowed`].{Action:EvalActionName,Decision:EvalDecision}' \\
+                                    --output json 2>/dev/null || echo '[]'
+                            """,
+                            returnStdout: true,
+                        ).trim()
+
+                        if (denied == '[]' || denied == '') {
+                            allowed = true
+                            break
+                        }
+                        lastDenied = denied
+                        echo "Permission verification attempt ${i + 1}/${maxAttempts} — still pending: ${denied}"
+                        sleep pollInterval
+                    }
+
+                    if (!allowed) {
+                        env.VERIFICATION_FAILED = 'true'
+                        env.DEPLOY_ERROR = "Permissions verification timed out after ${maxAttempts * pollInterval}s. Denied: ${lastDenied}"
+                        error(env.DEPLOY_ERROR)
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                def payload = groovy.json.JsonOutput.toJson([
+                    job_name:         env.JOB_NAME,
+                    build_number:     env.BUILD_NUMBER as int,
+                    status:           'SUCCESS',
+                    build_url:        env.BUILD_URL ?: '',
+                    service_type:     'INFRA_APPLY',
+                    run_code:         params.OBS_TOOL_RUN_CODE ?: '',
+                    resource_arn:     env.RESOURCE_ARN ?: '',
+                    resource_outputs: env.RESOURCE_OUTPUTS ?: '',
+                ])
+                sh """
+                    curl -sS -X POST --max-time 30 --retry 5 --retry-delay 3 --retry-connrefused "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '${payload}' || true
+                """
+            }
+        }
+        failure {
+            script {
+                def errMsg = env.DEPLOY_ERROR ?: 'Pipeline failed'
+                if (errMsg.length() > 2000) {
+                    errMsg = errMsg.substring(0, 2000) + '...(truncated)'
+                }
+                def failureKind = env.VERIFICATION_FAILED == 'true' ? 'PERMISSIONS_MISSING' : 'FAILURE'
+                def payload = groovy.json.JsonOutput.toJson([
+                    job_name:      env.JOB_NAME,
+                    build_number:  env.BUILD_NUMBER as int,
+                    status:        'FAILURE',
+                    failure_kind:  failureKind,
+                    build_url:     env.BUILD_URL ?: '',
+                    service_type:  'INFRA_APPLY',
+                    run_code:      params.OBS_TOOL_RUN_CODE ?: '',
+                    error_message: errMsg,
+                ])
+                sh """
+                    curl -sS -X POST --max-time 30 --retry 5 --retry-delay 3 --retry-connrefused "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '${payload}' || true
+                """
+            }
+        }
+    }
+}

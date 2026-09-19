@@ -1,0 +1,1018 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Infrastructure Chat Agent</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .chat-container {
+            width: 100%;
+            max-width: 900px;
+            height: 90vh;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-header h1 {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .chat-header .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #10b981;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .config-panel {
+            background: #f3f4f6;
+            padding: 15px 20px;
+            border-bottom: 1px solid #e5e7eb;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            align-items: center;
+            font-size: 13px;
+        }
+
+        .config-item {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .config-item label {
+            font-weight: 500;
+            color: #374151;
+            font-size: 12px;
+        }
+
+        .config-item input {
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 13px;
+            min-width: 200px;
+        }
+
+        .config-item input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .message {
+            display: flex;
+            gap: 12px;
+            max-width: 80%;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            align-self: flex-end;
+            flex-direction: row-reverse;
+        }
+
+        .message-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+
+        .message.bot .message-avatar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .message.user .message-avatar {
+            background: #e5e7eb;
+            color: #374151;
+        }
+
+        .message-content {
+            flex: 1;
+        }
+
+        .message-bubble {
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.5;
+            font-size: 14px;
+            white-space: pre-wrap;
+        }
+
+        .message.bot .message-bubble {
+            background: #f3f4f6;
+            color: #1f2937;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message.user .message-bubble {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message-metadata {
+            margin-top: 8px;
+            font-size: 11px;
+            color: #6b7280;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .metadata-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .metadata-badge {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+
+        .badge-intent {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .badge-resource {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .badge-create {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .badge-reference {
+            background: #fce7f3;
+            color: #9f1239;
+        }
+
+        .message.user .message-metadata {
+            color: rgba(255, 255, 255, 0.8);
+            justify-content: flex-end;
+        }
+
+        .input-area {
+            padding: 20px;
+            border-top: 1px solid #e5e7eb;
+            display: flex;
+            gap: 12px;
+            background: white;
+        }
+
+        #messageInput {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            resize: none;
+            font-family: inherit;
+            max-height: 120px;
+        }
+
+        #messageInput:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        #sendButton {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        #sendButton:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        #sendButton:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .loading-indicator {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 16px;
+            background: #f3f4f6;
+            border-radius: 12px;
+            align-self: flex-start;
+            margin-left: 48px;
+        }
+
+        .loading-indicator.active {
+            display: flex;
+        }
+
+        .loading-dots {
+            display: flex;
+            gap: 4px;
+        }
+
+        .loading-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #667eea;
+            animation: bounce 1.4s infinite ease-in-out;
+        }
+
+        .loading-dot:nth-child(1) { animation-delay: -0.32s; }
+        .loading-dot:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+
+        .error-message {
+            background: #fef2f2;
+            color: #991b1b;
+            padding: 12px 16px;
+            border-radius: 8px;
+            border-left: 4px solid #dc2626;
+            margin: 10px 0;
+            font-size: 13px;
+        }
+
+        .typing-indicator {
+            display: none;
+            padding: 8px 16px;
+            color: #6b7280;
+            font-size: 13px;
+            margin-left: 48px;
+        }
+
+        .typing-indicator.active {
+            display: block;
+        }
+
+        .clear-button {
+            padding: 8px 16px;
+            background: #f3f4f6;
+            color: #374151;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .clear-button:hover {
+            background: #e5e7eb;
+        }
+
+        .help-text {
+            background: #eff6ff;
+            border-left: 4px solid #3b82f6;
+            padding: 15px;
+            margin: 15px 20px;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #1e40af;
+        }
+
+        .help-text code {
+            background: #dbeafe;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h1>🏗️ Infrastructure Chat Agent</h1>
+            <div class="status">
+                <div class="status-dot"></div>
+                <span>Online</span>
+            </div>
+        </div>
+
+        <div class="config-panel">
+            <div class="config-item">
+                <label>API URL</label>
+                <input type="text" id="apiUrl" value="http://localhost:8000/api/v1/test-infra-chat" placeholder="http://localhost:8000/api/v1/test-infra-chat">
+            </div>
+            <div class="config-item">
+                <label>Conversation ID</label>
+                <input type="text" id="conversationId" value="test-conv-1" placeholder="test-conv-1">
+            </div>
+            <div class="config-item">
+                <label>Vendor</label>
+                <input type="text" id="vendor" value="aws" placeholder="aws">
+            </div>
+            <div class="config-item">
+                <label>Application</label>
+                <input type="text" id="application" value="core" placeholder="core">
+            </div>
+            <div class="config-item">
+                <label>Environment</label>
+                <input type="text" id="environment" value="dev" placeholder="dev">
+            </div>
+            <div class="config-item">
+                <label>Geo Location</label>
+                <input type="text" id="geoLoc" value="london" placeholder="london">
+            </div>
+            <div class="config-item">
+                <label>Service</label>
+                <input type="text" id="service" value="" placeholder="my-service">
+            </div>
+            <div class="config-item">
+                <label>Case Type</label>
+                <select id="caseType" onchange="updateCaseTypeHelp()" style="padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; min-width: 200px;">
+                    <option value="create-s3">Create S3</option>
+                    <option value="create-sqs">Create SQS</option>
+                    <option value="create-dynamodb">Create DynamoDB</option>
+                    <option value="create-kong-gateway">Create Kong Gateway</option>
+                </select>
+            </div>
+            <button class="clear-button" onclick="clearChat()">Clear Chat</button>
+            <button class="clear-button" onclick="newConversation()">New Conversation</button>
+            <button class="clear-button" onclick="updatePlacementParams()" style="background: #dbeafe; color: #1e40af; border-color: #93c5fd;">Update Placement Params</button>
+            <button class="clear-button" onclick="updateServiceParam()" style="background: #fef3c7; color: #92400e; border-color: #fbbf24;">Update Service Only</button>
+            <button class="clear-button" onclick="clearState()" style="background: #fee2e2; color: #991b1b; border-color: #fca5a5;">Clear State</button>
+        </div>
+
+        <div class="help-text" id="caseTypeHelp">
+            <strong>💡 Quick Start - S3 Bucket:</strong>
+            <br>• Click <strong>Update Placement Params</strong> to pre-populate placement parameters
+            <br>• Type: <code>create s3 bucket</code> to start
+            <br>• Provide <strong>Bucket Name</strong> when prompted
+            <br>• Optional: Enable <strong>Versioning</strong> or provide <strong>Cross Account ID</strong>
+            <br>• Say "yes" or "confirm" to create the resource
+            <br>• You can correct values before confirming
+        </div>
+
+        <div class="messages" id="messages"></div>
+
+        <div class="loading-indicator" id="loadingIndicator">
+            <div class="loading-dots">
+                <div class="loading-dot"></div>
+                <div class="loading-dot"></div>
+                <div class="loading-dot"></div>
+            </div>
+        </div>
+
+        <div class="typing-indicator" id="typingIndicator">Bot is typing...</div>
+
+        <div class="input-area">
+            <textarea id="messageInput" placeholder="Type your message here..." rows="2" onkeypress="handleKeyPress(event)"></textarea>
+            <button id="sendButton" onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        let messageHistory = [];
+
+        function updateCaseTypeHelp() {
+            const caseType = document.getElementById('caseType').value;
+            const helpDiv = document.getElementById('caseTypeHelp');
+
+            if (caseType === 'create-s3') {
+                helpDiv.style.background = '#eff6ff';
+                helpDiv.style.borderColor = '#3b82f6';
+                helpDiv.style.color = '#1e40af';
+                helpDiv.innerHTML = `
+                    <strong>💡 Quick Start - S3 Bucket:</strong>
+                    <br>• Click <strong>Update Placement Params</strong> to pre-populate placement parameters
+                    <br>• Type: <code>create s3 bucket</code> to start
+                    <br>• Provide <strong>Bucket Name</strong> (required)
+                    <br>• Optional: Enable <strong>Versioning</strong> or provide <strong>Cross Account ID</strong>
+                    <br>• Say "yes" or "confirm" to create the resource
+                `;
+            } else if (caseType === 'create-sqs') {
+                helpDiv.style.background = '#fef3c7';
+                helpDiv.style.borderColor = '#f59e0b';
+                helpDiv.style.color = '#92400e';
+                helpDiv.innerHTML = `
+                    <strong>🔔 Quick Start - SQS Queue:</strong>
+                    <br>• Click <strong>Update Placement Params</strong> to pre-populate placement parameters
+                    <br>• Type: <code>create sqs queue</code> to start
+                    <br>• Provide <strong>Queue Name</strong> (required)
+                    <br>• Required: <strong>FIFO</strong> (default: true), <strong>DLQ</strong> (default: true)
+                    <br>• Optional: Max Receive Count, Visibility Timeout, Retention Periods, Cross Account IDs
+                    <br>• Say "yes" or "confirm" to create the resource
+                `;
+            } else if (caseType === 'create-dynamodb') {
+                helpDiv.style.background = '#f0fdf4';
+                helpDiv.style.borderColor = '#16a34a';
+                helpDiv.style.color = '#166534';
+                helpDiv.innerHTML = `
+                    <strong>📊 Quick Start - DynamoDB Table:</strong>
+                    <br>• Click <strong>Update Placement Params</strong> to pre-populate placement parameters
+                    <br>• Type: <code>create dynamodb table</code> to start
+                    <br>• Provide <strong>Table Name</strong> (required)
+                    <br>• Provide <strong>Partition Key</strong> name (e.g., "user_id")
+                    <br>• Provide <strong>Partition Key Type</strong>: Try "string", "number", or "binary" (LLM will map to S/N/B)
+                    <br>• Say "yes" or "confirm" to create the resource
+                `;
+            } else if (caseType === 'create-kong-gateway') {
+                helpDiv.style.background = '#fef3c7';
+                helpDiv.style.borderColor = '#d97706';
+                helpDiv.style.color = '#78350f';
+                helpDiv.innerHTML = `
+                    <strong>🚪 Quick Start - Kong Gateway Route:</strong>
+                    <br>• Click <strong>Update Placement Params</strong> to pre-populate placement parameters
+                    <br>• <strong>Service is REQUIRED</strong>: Enter service name and click <strong>Update Service Only</strong>
+                    <br>• Type: <code>create kong gateway route</code> to start
+                    <br>• Provide <strong>HTTP Method</strong> (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)
+                    <br>• Provide <strong>Route</strong>: Must start with <code>~/</code> and end with <code>$</code>
+                    <br>• Examples: <code>~/api/users$</code>, <code>~/v1/orders/.*$</code>, <code>~/products/[0-9]+$</code>
+                    <br>• Say "yes" or "confirm" to create the resource
+                `;
+            }
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+
+        function clearChat() {
+            document.getElementById('messages').innerHTML = '';
+            messageHistory = [];
+        }
+
+        function newConversation() {
+            clearChat();
+            const timestamp = Date.now();
+            document.getElementById('conversationId').value = `test-conv-${timestamp}`;
+        }
+
+        async function updatePlacementParams() {
+            const conversationId = document.getElementById('conversationId').value;
+            const vendor = document.getElementById('vendor').value;
+            const application = document.getElementById('application').value;
+            const environment = document.getElementById('environment').value;
+            const geoLoc = document.getElementById('geoLoc').value;
+            const caseType = document.getElementById('caseType').value;
+
+            // Build placement parameters
+            const placementParams = {};
+            if (vendor) placementParams.infra_vendor_enum = vendor;
+            if (application) placementParams.applications_mst_code = application;
+            if (environment) placementParams.environment_enum = environment;
+            if (geoLoc) placementParams.geo_loc_mst_code = geoLoc;
+            if (caseType) placementParams.case_type_ref_code = caseType;
+
+            // Build request body
+            const requestBody = {
+                conversation_id: conversationId,
+                placement_parameters: placementParams,
+                case_code: caseType || "create-s3"  // Use caseType as case_code
+            };
+
+            console.log('Updating placement params:', JSON.stringify(requestBody, null, 2));
+
+            try {
+                const response = await fetch('http://localhost:8000/api/v1/test-update-placement-params', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                console.log('Response status:', response.status);
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+                    throw new Error(`HTTP ${response.status}: ${errorData.detail || errorData.message || response.statusText}`);
+                }
+
+                const data = await response.json();
+                console.log('Response data:', data);
+
+                // Show success message
+                const messagesDiv = document.getElementById('messages');
+                const successDiv = document.createElement('div');
+                successDiv.className = 'help-text';
+                successDiv.style.background = '#dcfce7';
+                successDiv.style.borderColor = '#16a34a';
+                successDiv.style.color = '#166534';
+                successDiv.innerHTML = `
+                    <strong>✅ Placement Parameters Updated!</strong><br>
+                    Status: ${data.status}<br>
+                    Message: ${data.message}<br>
+                    <details style="margin-top: 8px;">
+                        <summary style="cursor: pointer; font-weight: 600;">View Collected Parameters</summary>
+                        <pre style="margin-top: 8px; background: #f0fdf4; padding: 8px; border-radius: 4px; font-size: 11px; overflow-x: auto;">${JSON.stringify(data.collected_placement_parameters, null, 2)}</pre>
+                    </details>
+                `;
+                messagesDiv.appendChild(successDiv);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            } catch (error) {
+                console.error('Error:', error);
+                addError(error.message);
+            }
+        }
+
+        async function updateServiceParam() {
+            const conversationId = document.getElementById('conversationId').value;
+            const service = document.getElementById('service').value;
+
+            if (!service) {
+                addError('Please enter a service name');
+                return;
+            }
+
+            // Build placement parameters with only service
+            const placementParams = {
+                services_mst_code: service
+            };
+
+            // Build request body
+            const requestBody = {
+                conversation_id: conversationId,
+                placement_parameters: placementParams
+            };
+
+            console.log('Updating service param:', JSON.stringify(requestBody, null, 2));
+
+            try {
+                const response = await fetch('http://localhost:8000/api/v1/test-update-placement-params', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                console.log('Response status:', response.status);
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+                    throw new Error(`HTTP ${response.status}: ${errorData.detail || errorData.message || response.statusText}`);
+                }
+
+                const data = await response.json();
+                console.log('Response data:', data);
+
+                // Show success message
+                const messagesDiv = document.getElementById('messages');
+                const successDiv = document.createElement('div');
+                successDiv.className = 'help-text';
+                successDiv.style.background = '#fef3c7';
+                successDiv.style.borderColor = '#f59e0b';
+                successDiv.style.color = '#92400e';
+                successDiv.innerHTML = `
+                    <strong>✅ Service Parameter Updated!</strong><br>
+                    Service: <code>${service}</code><br>
+                    Status: ${data.status}<br>
+                    <details style="margin-top: 8px;">
+                        <summary style="cursor: pointer; font-weight: 600;">View All Collected Parameters</summary>
+                        <pre style="margin-top: 8px; background: #fffbeb; padding: 8px; border-radius: 4px; font-size: 11px; overflow-x: auto;">${JSON.stringify(data.collected_placement_parameters, null, 2)}</pre>
+                    </details>
+                `;
+                messagesDiv.appendChild(successDiv);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            } catch (error) {
+                console.error('Error:', error);
+                addError(error.message);
+            }
+        }
+
+        async function clearState() {
+            const conversationId = document.getElementById('conversationId').value;
+
+            // Build request body
+            const requestBody = {
+                conversation_id: conversationId
+            };
+
+            console.log('Clearing state:', JSON.stringify(requestBody, null, 2));
+
+            try {
+                const response = await fetch('http://localhost:8000/api/v1/test-clear-state', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                console.log('Response status:', response.status);
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+                    throw new Error(`HTTP ${response.status}: ${errorData.detail || errorData.message || response.statusText}`);
+                }
+
+                const data = await response.json();
+                console.log('Response data:', data);
+
+                // Show success message
+                const messagesDiv = document.getElementById('messages');
+                const successDiv = document.createElement('div');
+                successDiv.className = 'help-text';
+                successDiv.style.background = '#fee2e2';
+                successDiv.style.borderColor = '#f87171';
+                successDiv.style.color = '#991b1b';
+                successDiv.innerHTML = `
+                    <strong>🗑️ State Cleared!</strong><br>
+                    Status: ${data.status}<br>
+                    Message: ${data.message}<br>
+                    ${data.cleared_items.length > 0 ? `<div style="margin-top: 4px;">Cleared items: <code>${data.cleared_items.join(', ')}</code></div>` : ''}
+                    <div style="margin-top: 8px; font-size: 12px;">
+                        ℹ️ Placement parameters are preserved for reuse
+                    </div>
+                `;
+                messagesDiv.appendChild(successDiv);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            } catch (error) {
+                console.error('Error:', error);
+                addError(error.message);
+            }
+        }
+
+        function addMessage(content, isUser, metadata = {}) {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user' : 'bot'}`;
+
+            const avatar = document.createElement('div');
+            avatar.className = 'message-avatar';
+            avatar.textContent = isUser ? 'U' : 'AI';
+
+            const messageContent = document.createElement('div');
+            messageContent.className = 'message-content';
+
+            const bubble = document.createElement('div');
+            bubble.className = 'message-bubble';
+            bubble.textContent = content;
+
+            messageContent.appendChild(bubble);
+
+            // Add metadata for bot messages
+            if (!isUser && (metadata.intent || metadata.resource || metadata.cases || metadata.attribute_parameters || metadata.placement_parameters || metadata.remaining_placement_parameters || metadata.remaining_attribute_parameters)) {
+                const metadataDiv = document.createElement('div');
+                metadataDiv.className = 'message-metadata';
+
+                if (metadata.intent) {
+                    const intentSpan = document.createElement('span');
+                    intentSpan.className = 'metadata-item';
+                    intentSpan.innerHTML = `<span class="metadata-badge badge-intent">Intent: ${metadata.intent}</span>`;
+                    metadataDiv.appendChild(intentSpan);
+                }
+
+                if (metadata.resource) {
+                    const resourceSpan = document.createElement('span');
+                    resourceSpan.className = 'metadata-item';
+                    resourceSpan.innerHTML = `<span class="metadata-badge badge-resource">Resource: ${metadata.resource}</span>`;
+                    metadataDiv.appendChild(resourceSpan);
+                }
+
+                if (metadata.cases && metadata.cases.length > 0) {
+                    const casesSpan = document.createElement('span');
+                    casesSpan.className = 'metadata-item';
+                    casesSpan.innerHTML = `<span class="metadata-badge badge-create">Cases: ${metadata.cases.join(', ')}</span>`;
+                    metadataDiv.appendChild(casesSpan);
+                }
+
+                if (metadata.attribute_parameters && Object.keys(metadata.attribute_parameters).length > 0) {
+                    const paramsSpan = document.createElement('span');
+                    paramsSpan.className = 'metadata-item';
+                    const paramsStr = Object.entries(metadata.attribute_parameters)
+                        .map(([k, v]) => `${k}=${v}`)
+                        .join(', ');
+                    paramsSpan.innerHTML = `<span class="metadata-badge badge-create">Attributes: ${paramsStr}</span>`;
+                    metadataDiv.appendChild(paramsSpan);
+                }
+
+                if (metadata.placement_parameters && Object.keys(metadata.placement_parameters).length > 0) {
+                    const placementSpan = document.createElement('span');
+                    placementSpan.className = 'metadata-item';
+                    const placementStr = Object.entries(metadata.placement_parameters)
+                        .map(([k, v]) => `${k}=${v}`)
+                        .join(', ');
+                    placementSpan.innerHTML = `<span class="metadata-badge badge-reference">Placement: ${placementStr}</span>`;
+                    metadataDiv.appendChild(placementSpan);
+                }
+
+                messageContent.appendChild(metadataDiv);
+
+                // Add structured parameter metadata (collapsible)
+                if (metadata.remaining_placement_parameters && Object.keys(metadata.remaining_placement_parameters).length > 0) {
+                    const detailsDiv = document.createElement('details');
+                    detailsDiv.style.marginTop = '10px';
+                    detailsDiv.style.background = '#fef3c7';
+                    detailsDiv.style.border = '1px solid #fbbf24';
+                    detailsDiv.style.borderRadius = '6px';
+                    detailsDiv.style.padding = '8px';
+
+                    const summary = document.createElement('summary');
+                    summary.style.cursor = 'pointer';
+                    summary.style.fontWeight = '600';
+                    summary.style.fontSize = '12px';
+                    summary.style.color = '#92400e';
+                    summary.textContent = `📋 Missing Placement Parameters (${Object.keys(metadata.remaining_placement_parameters).length})`;
+                    detailsDiv.appendChild(summary);
+
+                    const paramsTable = document.createElement('table');
+                    paramsTable.style.width = '100%';
+                    paramsTable.style.marginTop = '8px';
+                    paramsTable.style.fontSize = '11px';
+                    paramsTable.style.borderCollapse = 'collapse';
+
+                    Object.entries(metadata.remaining_placement_parameters).forEach(([key, paramInfo]) => {
+                        // Skip if paramInfo is null
+                        if (!paramInfo) return;
+
+                        const row = paramsTable.insertRow();
+                        row.style.borderTop = '1px solid #fbbf24';
+
+                        const nameCell = row.insertCell();
+                        nameCell.style.padding = '6px';
+                        nameCell.style.fontWeight = '600';
+                        nameCell.textContent = paramInfo.name || key;
+
+                        const detailsCell = row.insertCell();
+                        detailsCell.style.padding = '6px';
+                        let details = `Type: ${paramInfo.type || 'N/A'}`;
+                        if (paramInfo.value_source && paramInfo.value_source.type === 'static') {
+                            const options = paramInfo.value_source.options.map(opt => opt.value).join(', ');
+                            details += ` | Options: ${options}`;
+                        }
+                        if (paramInfo.required) {
+                            details += ' | Required';
+                        }
+                        detailsCell.textContent = details;
+                    });
+
+                    detailsDiv.appendChild(paramsTable);
+                    messageContent.appendChild(detailsDiv);
+                }
+
+                if (metadata.remaining_attribute_parameters && Object.keys(metadata.remaining_attribute_parameters).length > 0) {
+                    const detailsDiv = document.createElement('details');
+                    detailsDiv.style.marginTop = '10px';
+                    detailsDiv.style.background = '#dbeafe';
+                    detailsDiv.style.border = '1px solid #93c5fd';
+                    detailsDiv.style.borderRadius = '6px';
+                    detailsDiv.style.padding = '8px';
+
+                    const summary = document.createElement('summary');
+                    summary.style.cursor = 'pointer';
+                    summary.style.fontWeight = '600';
+                    summary.style.fontSize = '12px';
+                    summary.style.color = '#1e40af';
+                    summary.textContent = `📋 Missing Attribute Parameters (${Object.keys(metadata.remaining_attribute_parameters).length})`;
+                    detailsDiv.appendChild(summary);
+
+                    const paramsTable = document.createElement('table');
+                    paramsTable.style.width = '100%';
+                    paramsTable.style.marginTop = '8px';
+                    paramsTable.style.fontSize = '11px';
+                    paramsTable.style.borderCollapse = 'collapse';
+
+                    Object.entries(metadata.remaining_attribute_parameters).forEach(([key, paramInfo]) => {
+                        // Skip if paramInfo is null
+                        if (!paramInfo) return;
+
+                        const row = paramsTable.insertRow();
+                        row.style.borderTop = '1px solid #93c5fd';
+
+                        const nameCell = row.insertCell();
+                        nameCell.style.padding = '6px';
+                        nameCell.style.fontWeight = '600';
+                        nameCell.textContent = paramInfo.name || key;
+
+                        const detailsCell = row.insertCell();
+                        detailsCell.style.padding = '6px';
+                        let details = `Type: ${paramInfo.type || 'N/A'}`;
+                        if (paramInfo.value_source && paramInfo.value_source.type === 'static') {
+                            const options = paramInfo.value_source.options.map(opt => opt.value).join(', ');
+                            details += ` | Options: ${options}`;
+                        }
+                        if (paramInfo.required) {
+                            details += ' | Required';
+                        }
+                        detailsCell.textContent = details;
+                    });
+
+                    detailsDiv.appendChild(paramsTable);
+                    messageContent.appendChild(detailsDiv);
+                }
+            }
+
+            messageDiv.appendChild(avatar);
+            messageDiv.appendChild(messageContent);
+            messagesDiv.appendChild(messageDiv);
+
+            // Scroll to bottom
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            // Store in history
+            messageHistory.push({ content, isUser, metadata });
+        }
+
+        function addError(message) {
+            const messagesDiv = document.getElementById('messages');
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error-message';
+            errorDiv.textContent = `❌ Error: ${message}`;
+            messagesDiv.appendChild(errorDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            const apiUrl = document.getElementById('apiUrl').value;
+            const conversationId = document.getElementById('conversationId').value;
+            const vendor = document.getElementById('vendor').value;
+            const application = document.getElementById('application').value;
+            const environment = document.getElementById('environment').value;
+            const geoLoc = document.getElementById('geoLoc').value;
+            const caseType = document.getElementById('caseType').value;
+
+            // Add user message to chat
+            addMessage(message, true);
+
+            // Clear input
+            input.value = '';
+
+            // Show loading indicator
+            document.getElementById('loadingIndicator').classList.add('active');
+            document.getElementById('typingIndicator').classList.add('active');
+            document.getElementById('sendButton').disabled = true;
+
+            try {
+                // Log request details for debugging
+                const requestBody = {
+                    message: message,
+                    conversation_id: conversationId
+                };
+                console.log('Sending request to:', apiUrl);
+                console.log('Request body:', JSON.stringify(requestBody, null, 2));
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                console.log('Response status:', response.status);
+                console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+
+                if (!response.ok) {
+                    // Try to get error details
+                    const contentType = response.headers.get('content-type');
+                    let errorDetails = response.statusText;
+
+                    if (contentType && contentType.includes('application/json')) {
+                        const errorData = await response.json();
+                        errorDetails = errorData.detail || errorData.message || errorDetails;
+                    } else {
+                        // Response is not JSON, get text
+                        const textData = await response.text();
+                        if (textData) {
+                            errorDetails = textData.substring(0, 200); // Truncate long responses
+                        }
+                    }
+
+                    throw new Error(`HTTP ${response.status}: ${errorDetails}`);
+                }
+
+                const responseText = await response.text();
+                console.log('Raw response:', responseText.substring(0, 200));
+
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (parseError) {
+                    throw new Error(`Invalid JSON response: ${parseError.message}. Response: ${responseText.substring(0, 100)}`);
+                }
+
+                // Use the response text as-is
+                let displayResponse = data.response || 'No response text';
+
+                // Add bot response to chat with structured parameter metadata
+                addMessage(displayResponse, false, {
+                    intent: data.intent,
+                    resource: data.resource,
+                    cases: data.cases,
+                    attribute_parameters: data.attribute_parameters,
+                    placement_parameters: data.placement_parameters,
+                    remaining_placement_parameters: data.remaining_placement_parameters,
+                    remaining_attribute_parameters: data.remaining_attribute_parameters
+                });
+
+            } catch (error) {
+                console.error('Error:', error);
+                addError(error.message);
+            } finally {
+                // Hide loading indicator
+                document.getElementById('loadingIndicator').classList.remove('active');
+                document.getElementById('typingIndicator').classList.remove('active');
+                document.getElementById('sendButton').disabled = false;
+            }
+        }
+
+        // Focus input on load
+        window.onload = () => {
+            document.getElementById('messageInput').focus();
+            updateCaseTypeHelp(); // Set initial help text
+            addMessage('👋 Welcome! Select your Case Type above (S3, SQS, DynamoDB, or Kong Gateway), click "Update Placement Params", then start chatting!', false);
+        };
+    </script>
+</body>
+</html>

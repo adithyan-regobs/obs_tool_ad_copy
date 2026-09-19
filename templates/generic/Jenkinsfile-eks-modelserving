@@ -1,0 +1,212 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'GITHUB_TOKEN', defaultValue: '', description: 'GitHub App installation token for infra repo (injected by ObsTool)')
+        string(name: 'SOURCE_GITHUB_TOKEN', defaultValue: '', description: 'GitHub App installation token for source repo (injected by ObsTool)')
+        string(name: 'OBS_TOOL_RUN_CODE', defaultValue: '', description: 'ObsTool pipeline run track code for webhook matching')
+    }
+
+    environment {
+        AWS_REGION     = '{{AWS_REGION}}'
+        SERVICE_NAME   = '{{SERVICE_NAME}}'
+        ENVIRONMENT    = '{{ENVIRONMENT}}'
+        EKS_CLUSTER    = '{{EKS_CLUSTER_NAME}}'
+        NAMESPACE      = '{{NAMESPACE}}'
+        INFRA_REPO     = '{{INFRA_REPO}}'
+        INFRA_BRANCH   = '{{INFRA_BRANCH}}'
+        MANIFESTS_PATH = '{{MANIFESTS_PATH}}'
+        MODEL_ID          = '{{MODEL_ID}}'
+        REVISION          = '{{REVISION}}'
+        EFS_PATH          = '{{EFS_PATH}}'
+        DOWNLOAD_JOB_NAME = '{{DOWNLOAD_JOB_NAME}}'
+        OBS_TOOL_BASE_URL = '{{OBS_TOOL_BASE_URL}}'
+        OBSTOOL_WEBHOOK_URL = '{{OBSTOOL_WEBHOOK_URL}}'
+        WEBHOOK_SECRET      = '{{WEBHOOK_SECRET}}'
+        RUN_CODE            = "${params.OBS_TOOL_RUN_CODE}"
+        // Surfaces in webhook payload as commit_sha — model serving has no git
+        // commit, so identify the deployed artefact by model + revision.
+        IMAGE_TAG           = "{{MODEL_ID}}@{{REVISION}}"
+    }
+
+    options {
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Initialisation') {
+            steps {
+                cleanWs()
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"initialisation","run_code":"'\"\${RUN_CODE}\"'"}' \
+                        || true
+                """
+                sh """
+                    git clone --depth=1 --branch "\${INFRA_BRANCH}" \\
+                        "https://x-access-token:${params.GITHUB_TOKEN}@github.com/\${INFRA_REPO}.git" infra-repo
+                    mkdir -p k8s-manifests
+                    cp infra-repo/\${MANIFESTS_PATH}/*.yaml k8s-manifests/
+                    echo "Fetched manifests:"
+                    ls -la k8s-manifests/
+                """
+                sh """
+                    aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER}
+                    kubectl apply -f k8s-manifests/00-namespace.yaml
+                    kubectl apply -f k8s-manifests/01-serviceaccount.yaml
+                    # Clear stale claimRef on Released PV so re-applied PVC can bind.
+                    # After tenant cleanup, PV retains old PVC UID and blocks new binding.
+                    PV_NAME="efs-model-store-${NAMESPACE}"
+                    PV_STATUS=\$(kubectl get pv \${PV_NAME} -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                    if [ "\${PV_STATUS}" = "Released" ]; then
+                        echo "PV \${PV_NAME} is Released — clearing stale claimRef before re-apply"
+                        kubectl patch pv \${PV_NAME} -p '{\"spec\":{\"claimRef\":null}}' --type=merge
+                    fi
+                    kubectl apply -f k8s-manifests/02-efs-pvc-tenant.yaml
+                    [ -f k8s-manifests/07-secret-provider-class.yaml ] && kubectl apply -f k8s-manifests/07-secret-provider-class.yaml || true
+                """
+            }
+        }
+
+        stage('Model Download') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"downloading_model","run_code":"'\"\${RUN_CODE}\"'"}' \
+                        || true
+                """
+                script {
+                    def modelStatus = sh(
+                        script: """
+                            curl -sf \\
+                              -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \\
+                              "\${OBS_TOOL_BASE_URL}/api/v1/model-registry/status?model_id=\${MODEL_ID}&revision=\${REVISION}" \\
+                            | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" \\
+                            2>/dev/null || echo "unknown"
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (modelStatus == "ready") {
+                        echo "Model already on EFS at \${EFS_PATH} — skipping download."
+                    } else {
+                        echo "Downloading model \${MODEL_ID}@\${REVISION} to EFS..."
+                        sh """
+                            MANIFEST_DIR="infra-repo/\${MANIFESTS_PATH}"
+                            kubectl apply -f "\${MANIFEST_DIR}/08-model-download-sa.yaml"
+                            kubectl apply -f "\${MANIFEST_DIR}/09-model-download-spc.yaml"
+                            kubectl apply -f "\${MANIFEST_DIR}/10-model-download-pvc.yaml"
+                            kubectl delete job/\${DOWNLOAD_JOB_NAME} -n model-download-ns --ignore-not-found
+                            kubectl apply -f "\${MANIFEST_DIR}/model-download-job.yaml"
+                            kubectl wait --for=condition=complete \\
+                                job/\${DOWNLOAD_JOB_NAME} \\
+                                -n model-download-ns \\
+                                --timeout=180m
+                        """
+                        // Best-effort status update
+                        sh """
+                            curl -sf -X POST \\
+                                "\${OBS_TOOL_BASE_URL}/api/v1/model-registry/mark-ready" \\
+                                -H "Content-Type: application/json" \\
+                                -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \\
+                                -d '{"model_id":"'"\${MODEL_ID}"'","revision":"'"\${REVISION}"'"}' \\
+                                || true
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"deploying","run_code":"'\"\${RUN_CODE}\"'"}' \
+                        || true
+                """
+                sh """
+                    aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER}
+                    kubectl apply -f infra-repo/\${MANIFESTS_PATH}/inference-service.yaml
+                """
+            }
+        }
+
+        stage('Verify') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"verification","run_code":"'\"\${RUN_CODE}\"'"}' \
+                        || true
+                """
+                script {
+                    env.DEPLOY_ERROR = ''
+                    env.ALB_HOSTNAME = ''
+                    try {
+                        sh """
+                            kubectl wait inferenceservice/${SERVICE_NAME} \\
+                                --for=condition=Ready \\
+                                --timeout=30m \\
+                                -n ${NAMESPACE}
+                        """
+                        echo "InferenceService ${SERVICE_NAME} is Ready"
+                    } catch (err) {
+                        // Capture pod status + container logs for diagnosis
+                        env.DEPLOY_ERROR = sh(
+                            script: """
+                                echo "=== InferenceService Status ==="
+                                kubectl get inferenceservice/${SERVICE_NAME} -n ${NAMESPACE} -o jsonpath='{.status.conditions[*].message}' 2>/dev/null || true
+                                echo ""
+                                echo "=== Pod Status ==="
+                                kubectl get pods -l serving.kserve.io/inferenceservice=${SERVICE_NAME} -n ${NAMESPACE} 2>/dev/null || true
+                                echo ""
+                                echo "=== vLLM Container Logs (last 30 lines) ==="
+                                POD=\$(kubectl get pods -l serving.kserve.io/inferenceservice=${SERVICE_NAME} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+                                if [ -n "\${POD}" ]; then
+                                    kubectl logs \${POD} -n ${NAMESPACE} -c kserve-container --tail=30 2>/dev/null || true
+                                fi
+                            """,
+                            returnStdout: true
+                        ).trim()
+                        error("InferenceService deployment failed: ${env.DEPLOY_ERROR}")
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                def buildStatus = currentBuild.currentResult ?: 'UNKNOWN'
+                def errMsg = env.DEPLOY_ERROR ?: ''
+                if (errMsg.length() > 2000) {
+                    errMsg = errMsg.substring(0, 2000) + '...(truncated)'
+                }
+                def payload = groovy.json.JsonOutput.toJson([
+                    job_name: env.JOB_NAME,
+                    build_number: env.BUILD_NUMBER as int,
+                    status: buildStatus,
+                    build_url: env.BUILD_URL ?: '',
+                    commit_sha: env.IMAGE_TAG ?: '',
+                    alb_url: env.ALB_HOSTNAME ? "https://${env.ALB_HOSTNAME}" : '',
+                    error_message: errMsg,
+                    run_code: env.RUN_CODE ?: ''
+                ])
+                sh """
+                    curl -s -X POST "${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: ${WEBHOOK_SECRET}" \
+                        -d '${payload}' || echo 'Webhook notification failed (non-fatal)'
+                """
+            }
+        }
+    }
+}

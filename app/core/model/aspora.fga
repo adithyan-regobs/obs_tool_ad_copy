@@ -1,0 +1,120 @@
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ HISTORICAL — DO NOT PUBLISH. This is NOT the live model.                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# The v4 hierarchy (tenant -> workspace -> product -> resource_group ->
+# environment -> geo_loc, plus infra_mst and per-secret objects). Uses `group`
+# where live uses `user_group`, and permission names (can_update, can_pr,
+# can_restart, can_create_*) that no longer exist.
+#
+# The live model is rbac-model.fga in this directory (mirror) and
+# devlift-secret-config-manager-vance/app/core/authz/rbac-model.fga (authority,
+# published from there). Live is model 01M0G32F1SFJTZMXMH16J2G963 on store
+# 01KZCADQJ1Q3HPAW6EN4QWD8WR.
+#
+# Publishing this file would repoint `service.parent` at `geo_loc` while every
+# one of the ~1556 live parent tuples points at resource_group, so every check
+# would resolve to false and the whole product would lock out — the same
+# re-parenting outage that had to be repaired by hand once already. It also
+# lacks can_write_settings, can_write_gateway, can_view_settings and
+# can_approve entirely, so approvals and the settings/gateway guards would fail
+# closed.
+#
+# Kept only as the reference for the fuller hierarchy that returns in a later
+# phase. Read it for shape; do not feed it to `fga model write`.
+
+model
+  schema 1.1
+
+type user
+
+type group
+  relations
+    define member: [user, group#member]
+
+type tenant
+  relations
+    define member: [user]
+
+type workspace
+  relations
+    define parent: [tenant]
+
+type product
+  relations
+    define parent: [workspace]
+
+type resource_group
+  relations
+    define admin: [user, group#member]
+    define approver: [user, group#member]
+    define parent: [product]
+    define service_creater: [user, group#member]
+
+type environment
+  relations
+    define admin: [user, group#member] or admin from parent
+    define approver: [user, group#member] or approver from parent
+    define parent: [resource_group]
+    define service_creater: [user, group#member] or service_creater from parent
+
+type geo_loc
+  relations
+    define admin: [user, group#member] or admin from parent
+    define approver: [user, group#member] or approver from parent
+    define can_create_dynamo: [user, group#member] or admin
+    define can_create_s3: [user, group#member] or admin
+    define can_create_service: [user, group#member] or admin or service_creater
+    define can_create_sqs: [user, group#member] or admin
+    define parent: [environment]
+    define service_creater: [user, group#member] or service_creater from parent
+
+type infra_mst
+  relations
+    define admin: [user, group#member] or admin from parent
+    define approver: [user, group#member] or approver from parent
+    define can_approve: approver
+    define can_delete: admin
+    define can_read: admin
+    define can_update: admin or service_creater
+    define can_view: admin
+    define can_write: admin
+    define parent: [geo_loc]
+    define service_creater: [user, group#member] or service_creater from parent
+
+type service
+  relations
+    define admin: [user, group#member] or admin from parent
+    define approver: [user, group#member] or approver from parent
+    define can_approve: approver
+    define can_create_secret: admin
+    define can_create_variable: admin
+    define can_delete: admin
+    define can_deploy: admin
+    define can_pr: admin
+    define can_restart: admin
+    define can_start_service: admin
+    define can_stop_service: admin
+    define can_update: admin or selective_service_manager or service_creater
+    define can_update_secret: admin
+    define can_update_variable: admin
+    define can_view: admin
+    define can_view_config: admin or selective_service_manager
+    define can_view_secret: admin
+    define can_write_config: admin or selective_service_manager
+    define can_write_secret: admin
+    define parent: [geo_loc]
+    define selective_service_manager: [user, group#member]
+    define service_creater: [user, group#member] or service_creater from parent
+
+type secret
+  relations
+    define admin: [user, group#member] or admin from parent
+    define approver: [user, group#member] or approver from parent
+    define can_approve: approver
+    define can_delete: admin
+    define can_read: admin
+    define can_update: admin
+    define parent: [service]
+    define selective_service_manager: [user, group#member] or selective_service_manager from parent
+    define service_creater: [user, group#member] or service_creater from parent

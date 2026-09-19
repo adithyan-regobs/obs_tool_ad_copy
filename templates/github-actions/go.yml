@@ -1,0 +1,90 @@
+name: Deploy {{SERVICE_NAME}} to {{ENVIRONMENT_NAME}}
+run-name: >-
+  ${{ github.event.inputs.triggered_by_user != '' &&
+      format('Deploy {{SERVICE_NAME}} to {{ENVIRONMENT_NAME}} (requested by {0})', github.event.inputs.triggered_by_user)
+      ||
+      format('Deploy {{SERVICE_NAME}} to {{ENVIRONMENT_NAME}}')
+  }}
+
+on:
+  push:
+    branches:
+      - {{BRANCH}}
+{{FOLDER_PATH_FILTER}}
+  workflow_dispatch:
+    inputs:
+      triggered_by_user:
+        description: "Email or name of the user triggering this workflow"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: {{AWS_REGION}}
+  ECR_REPOSITORY: {{ECR_REPOSITORY}}
+  SERVICE_NAME: {{ECS_SERVICE}}
+  ENVIRONMENT: {{ENVIRONMENT}}
+  ECS_CLUSTER: {{ECS_CLUSTER}}
+
+jobs:
+  build-and-deploy:
+    runs-on: [self-hosted, aws]
+{{GITHUB_ENVIRONMENT}}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.0
+        with:
+          role-to-assume: {{AWS_ROLE_ARN}}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: Devlift-${{ github.run_id }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '{{GO_VERSION}}'
+
+      - name: Configure Git for private modules
+        run: |
+          git config --global url."https://${{ secrets.GH_TOKEN }}:x-oauth-basic@github.com/Vance-Club".insteadOf "https://github.com/Vance-Club"
+          echo "GOPRIVATE=github.com/Vance-Club" >> $GITHUB_ENV
+
+      - name: Download dependencies
+        run: go mod download
+{{WIRE_STEP}}
+      - name: Build Go binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o app {{BUILD_PATH}}
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build {{DOCKERFILE_FLAG}}\
+            -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} \
+            -t ${{ env.ECR_REPOSITORY }}:latest \
+{{GO_DOCKER_BUILD_ARGS}}{{CUSTOM_BUILD_ARGS}}            .
+          docker push ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker push ${{ env.ECR_REPOSITORY }}:latest
+          echo "image=${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}" >> $GITHUB_OUTPUT
+
+      - name: Force ECS Deployment
+        run: |
+          echo "Forcing new deployment for ECS service..."
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.SERVICE_NAME }} \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+          echo "Deployment triggered successfully!"
+          echo "Service: ${{ env.SERVICE_NAME }}"
+          echo "Cluster: ${{ env.ECS_CLUSTER }}"

@@ -1,0 +1,57 @@
+"""make tenant_mst_code nullable in cicd_template_mst
+
+Revision ID: 087_make_tenant_nullable_in_cicd_template
+Revises: 086_add_step_columns_to_cicd_template
+Create Date: 2024-12-25
+
+Makes tenant_mst_code nullable to allow global workflow steps.
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+
+
+# revision identifiers, used by Alembic.
+revision: str = '087_make_tenant_nullable_in_cicd_template'
+down_revision: Union[str, None] = '086_add_step_columns_to_cicd_template'
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade():
+    # First update workflow steps to have null tenant
+    op.execute("UPDATE cicd_template_mst SET tenant_mst_code = NULL WHERE code LIKE 'step-%'")
+
+    # Drop foreign key constraint
+    op.drop_constraint('fk_cicd_template_tenant', 'cicd_template_mst', type_='foreignkey')
+
+    # Make tenant_mst_code nullable
+    op.alter_column('cicd_template_mst', 'tenant_mst_code', nullable=True)
+
+    # Recreate foreign key constraint (but nullable)
+    op.create_foreign_key(
+        'fk_cicd_template_tenant',
+        'cicd_template_mst', 'tenant_mst_code',
+        'tenants_mst', 'code',
+        ondelete='CASCADE'
+    )
+
+
+def downgrade():
+    # Set tenant for existing workflow steps (will need to be set to a valid tenant)
+    # This is a simplification - in production you'd want to handle this differently
+
+    # Drop foreign key constraint
+    op.drop_constraint('fk_cicd_template_tenant', 'cicd_template_mst', type_='foreignkey')
+
+    # Make tenant_mst_code not nullable again
+    op.alter_column('cicd_template_mst', 'tenant_mst_code', nullable=False)
+
+    # Recreate foreign key constraint
+    op.create_foreign_key(
+        'fk_cicd_template_tenant',
+        'cicd_template_mst', 'tenant_mst_code',
+        'tenants_mst', 'code',
+        ondelete='CASCADE'
+    )

@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{SERVICE_NAME}}
+  namespace: {{NAMESPACE}}
+  annotations:
+    reloader.stakater.com/auto: 'true'
+  labels:
+    app: {{SERVICE_NAME}}
+spec:
+  replicas: {{REPLICA_COUNT}}
+  strategy:
+{{DEPLOYMENT_STRATEGY}}
+  selector:
+    matchLabels:
+      app: {{SERVICE_NAME}}
+  template:
+    metadata:
+      labels:
+        app: {{SERVICE_NAME}}
+        devlift.ai/tenant: {{TENANT_CODE}}
+        devlift.ai/environment: {{ENVIRONMENT}}
+        devlift.ai/service: {{SERVICE_NAME}}
+    spec:
+      serviceAccountName: {{SERVICE_NAME}}-sa
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: eks.amazonaws.com/instance-category
+                    operator: NotIn
+                    values: ["g", "p"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+      containers:
+        - name: {{SERVICE_NAME}}
+          image: {{ECR_REGISTRY}}/{{ECR_REPO_NAME}}:{{IMAGE_TAG}}
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: {{CONTAINER_PORT}}
+{{ENV_VARS}}
+{{VOLUME_MOUNTS}}
+          resources:
+            requests:
+              cpu: "{{CPU_REQUESTED}}"
+              memory: "{{MEMORY_REQUESTED}}"
+            limits:
+              cpu: "{{CPU_LIMIT}}"
+              memory: "{{MEMORY_LIMIT}}"
+          livenessProbe:
+            httpGet:
+              path: {{HEALTH_ENDPOINT}}
+              port: {{CONTAINER_PORT}}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: {{HEALTH_ENDPOINT}}
+              port: {{CONTAINER_PORT}}
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+{{VOLUMES}}

@@ -1,0 +1,296 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'GITHUB_TOKEN', defaultValue: '', description: 'GitHub App installation token for infra repo (injected by ObsTool)')
+        string(name: 'SOURCE_GITHUB_TOKEN', defaultValue: '', description: 'GitHub App installation token for source repo (injected by ObsTool)')
+        string(name: 'OBS_TOOL_RUN_CODE', defaultValue: '', description: 'ObsTool pipeline run track code for webhook matching')
+    }
+
+    environment {
+        AWS_REGION     = '{{AWS_REGION}}'
+        ECR_REGISTRY   = '{{ECR_REGISTRY}}'
+        SERVICE_NAME   = '{{SERVICE_NAME}}'
+        ECR_REPO_NAME  = '{{ECR_REPO_NAME}}'
+        ENVIRONMENT    = '{{ENVIRONMENT}}'
+        EKS_CLUSTER    = '{{EKS_CLUSTER_NAME}}'
+        NAMESPACE      = '{{NAMESPACE}}'
+        INFRA_REPO     = '{{INFRA_REPO}}'
+        INFRA_BRANCH   = '{{INFRA_BRANCH}}'
+        MANIFESTS_PATH = '{{MANIFESTS_PATH}}'
+        OBSTOOL_WEBHOOK_URL = '{{OBSTOOL_WEBHOOK_URL}}'
+        WEBHOOK_SECRET      = '{{WEBHOOK_SECRET}}'
+        RUN_CODE            = "${params.OBS_TOOL_RUN_CODE}"
+    }
+
+    options {
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Initialisation') {
+            steps {
+                cleanWs()
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"initialisation","run_code":"'\"\${RUN_CODE}\"'"}' \
+                        || true
+                """
+                sh """
+                    git clone --depth=1 --branch "\${INFRA_BRANCH}" \\
+                        "https://x-access-token:${params.GITHUB_TOKEN}@github.com/\${INFRA_REPO}.git" infra-repo
+                    mkdir -p k8s-manifests
+                    cp infra-repo/\${MANIFESTS_PATH}/*.yaml k8s-manifests/
+                    echo "Fetched manifests:"
+                    ls -la k8s-manifests/
+                """
+                sh """
+                    aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER}
+                    kubectl apply -f k8s-manifests/00-namespace.yaml
+                    kubectl apply -f k8s-manifests/01-serviceaccount.yaml
+                    kubectl apply -f k8s-manifests/03-service.yaml
+                    kubectl apply -f k8s-manifests/06-ingress.yaml
+                    [ -f k8s-manifests/07-secret-provider-class.yaml ] && kubectl apply -f k8s-manifests/07-secret-provider-class.yaml || true
+                """
+                sh '''
+                    aws ecr describe-repositories --repository-names ${ECR_REPO_NAME} --region ${AWS_REGION} || \
+                    aws ecr create-repository --repository-name ${ECR_REPO_NAME} --region ${AWS_REGION}
+                    aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                '''
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \\
+                        -H 'Content-Type: application/json' \\
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \\
+                        -d '{"job_name":"'"\"\${JOB_NAME}\"'"',"build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'"\"\${BUILD_URL}\"'"',"commit_sha":"","stage":"checkout","run_code":"'"\"\${RUN_CODE}\"'"'}' \\
+                        || true
+                """
+                sh """
+                    git init
+                    git remote add origin https://x-access-token:${params.SOURCE_GITHUB_TOKEN}@github.com/{{OWNER_REPO}}.git
+                    git fetch origin {{REPO_BRANCH}} --depth=1
+                    git checkout FETCH_HEAD
+                """
+                script {
+                    env.IMAGE_TAG = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \\
+                        -H 'Content-Type: application/json' \\
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \\
+                        -d '{"job_name":"'"\"\${JOB_NAME}\"'"',"build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'"\"\${BUILD_URL}\"'"',"commit_sha":"'"\"\${IMAGE_TAG}\"'"',"stage":"building","run_code":"'"\"\${RUN_CODE}\"'"'}' \\
+                        || true
+                """
+                sh '''
+                    # Wait up to 2 minutes for the dind sidecar's docker daemon
+                    # to become reachable. Without this the Build stage races
+                    # container startup and fails with "Cannot connect to the
+                    # Docker daemon at tcp://localhost:2375".
+                    for i in $(seq 1 60); do
+                        docker info >/dev/null 2>&1 && break
+                        echo "Waiting for docker daemon (attempt $i/60)..."
+                        sleep 2
+                        [ "$i" = "60" ] && { echo "ERROR: docker daemon never came up"; exit 1; }
+                    done
+                '''
+                sh """
+                    docker build --progress=plain --no-cache \\
+                        {{CUSTOM_BUILD_ARGS}}-f {{DOCKERFILE_PATH}} \\
+                        -t ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} .
+                """
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"deploying","run_code":"'\"\${RUN_CODE}\"'"}' \
+                        || true
+                """
+                sh """
+                    docker tag ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO_NAME}:latest
+                    docker push ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}
+                    docker push ${ECR_REGISTRY}/${ECR_REPO_NAME}:latest
+                """
+                sh """
+                    sed -i "s|IMAGE_TAG_PLACEHOLDER|\${IMAGE_TAG}|g" k8s-manifests/02-deployment.yaml
+                """
+                sh """
+                    aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER}
+                    [ -f k8s-manifests/07-secret-provider-class.yaml ] && kubectl apply -f k8s-manifests/07-secret-provider-class.yaml || true
+                    if kubectl get deployment ${SERVICE_NAME} -n ${NAMESPACE} > /dev/null 2>&1; then
+                        kubectl delete secret ${SERVICE_NAME}-secrets -n ${NAMESPACE} --ignore-not-found
+                        sleep 30
+                        kubectl apply -f k8s-manifests/02-deployment.yaml
+                        kubectl rollout restart deployment/${SERVICE_NAME} -n ${NAMESPACE}
+                    else
+                        kubectl apply -f k8s-manifests/02-deployment.yaml
+                    fi
+                """
+            }
+        }
+
+        stage('Verify') {
+            steps {
+                sh """
+                    curl -s -X POST "\${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: \${WEBHOOK_SECRET}" \
+                        -d '{"job_name":"'\"\${JOB_NAME}\"'","build_number":'\${BUILD_NUMBER}',"status":"IN_PROGRESS","build_url":"'\"\${BUILD_URL}\"'","commit_sha":"","stage":"verification","run_code":"'\"\${RUN_CODE}\"'"}' \
+                        || true
+                """
+                script {
+                    env.DEPLOY_ERROR = ''
+                    env.ALB_HOSTNAME = ''
+                    def maxAttempts = 60
+                    def pollInterval = 15
+                    def deployed = false
+
+                    for (int i = 0; i < maxAttempts; i++) {
+                        // Check for unrecoverable pod failures (OOM, CrashLoopBackOff, etc.)
+                        // Scope to the newest ReplicaSet's pod-template-hash to avoid
+                        // racing the previous RS's terminating pods during rollout.
+                        def diagnosis = sh(
+                            script: """
+                                HASH=\$(kubectl get rs -n ${NAMESPACE} -l app=${SERVICE_NAME} --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.labels.pod-template-hash}' 2>/dev/null || true)
+                                if [ -n "\$HASH" ]; then
+                                    SELECTOR="app=${SERVICE_NAME},pod-template-hash=\$HASH"
+                                else
+                                    SELECTOR="app=${SERVICE_NAME}"
+                                fi
+                                kubectl get pods -l "\$SELECTOR" -n ${NAMESPACE} -o json 2>/dev/null | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except:
+    sys.exit(0)
+errors = []
+for pod in data.get("items", []):
+    # Skip pods that are being terminated — they belong to a previous rollout
+    if pod.get("metadata", {}).get("deletionTimestamp"):
+        continue
+    name = pod["metadata"]["name"]
+    for cs in pod.get("status", {}).get("containerStatuses", []):
+        w = cs.get("state", {}).get("waiting", {})
+        t = cs.get("lastState", {}).get("terminated", {})
+        reason = w.get("reason", "")
+        msg = w.get("message", "")
+        if reason in ("CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError", "RunContainerError"):
+            errors.append(f"{reason}: {msg}" if msg else reason)
+        if t.get("reason") == "OOMKilled":
+            limits = ""
+            for c in pod.get("spec", {}).get("containers", []):
+                mem = c.get("resources", {}).get("limits", {}).get("memory", "")
+                if mem:
+                    limits = f" (memory limit: {mem})"
+            errors.append(f"OOMKilled{limits}: Container ran out of memory. Increase memory in service settings.")
+if errors:
+    print("\\n".join(errors))
+' 2>/dev/null || true
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        if (diagnosis) {
+                            env.DEPLOY_ERROR = diagnosis
+                            echo "Pod failure detected: ${diagnosis}"
+                            error("Deployment failed: ${diagnosis}")
+                        }
+
+                        // Check if rollout is complete (quick 5s check, not blocking)
+                        def rolloutStatus = sh(
+                            script: "kubectl rollout status deployment/${SERVICE_NAME} --namespace=${NAMESPACE} --timeout=5s 2>&1",
+                            returnStatus: true
+                        )
+                        if (rolloutStatus == 0) {
+                            echo "Rollout complete"
+                            deployed = true
+                            break
+                        }
+
+                        echo "Waiting for deployment... (attempt ${i + 1}/${maxAttempts})"
+                        sleep(pollInterval)
+                    }
+
+                    if (!deployed && !env.DEPLOY_ERROR) {
+                        // Timeout - capture pod status for diagnosis
+                        env.DEPLOY_ERROR = sh(
+                            script: """
+                                echo "Deployment timed out after 15 minutes. Pod status:"
+                                kubectl get pods -l app=${SERVICE_NAME} -n ${NAMESPACE} 2>/dev/null || true
+                                echo "---"
+                                kubectl describe pods -l app=${SERVICE_NAME} -n ${NAMESPACE} 2>/dev/null | tail -30 || true
+                            """,
+                            returnStdout: true
+                        ).trim()
+                        error("Deployment timed out")
+                    }
+
+                    if (deployed) {
+                        echo "Checking ingress..."
+                        sh "kubectl get ingress --namespace=${NAMESPACE}"
+
+                        // Wait for ALB hostname
+                        for (int i = 0; i < 10; i++) {
+                            env.ALB_HOSTNAME = sh(
+                                script: "kubectl get ingress ${SERVICE_NAME}-ingress -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo ''",
+                                returnStdout: true
+                            ).trim()
+                            if (env.ALB_HOSTNAME) {
+                                echo "ALB hostname ready: ${env.ALB_HOSTNAME}"
+                                break
+                            }
+                            echo "Waiting for ALB hostname... (attempt ${i + 1}/10)"
+                            sleep(pollInterval)
+                        }
+                        if (!env.ALB_HOSTNAME) {
+                            echo "WARNING: ALB hostname not available after 150s"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                def buildStatus = currentBuild.currentResult ?: 'UNKNOWN'
+                def errMsg = env.DEPLOY_ERROR ?: ''
+                if (errMsg.length() > 2000) {
+                    errMsg = errMsg.substring(0, 2000) + '...(truncated)'
+                }
+                def payload = groovy.json.JsonOutput.toJson([
+                    job_name: env.JOB_NAME,
+                    build_number: env.BUILD_NUMBER as int,
+                    status: buildStatus,
+                    build_url: env.BUILD_URL ?: '',
+                    commit_sha: env.IMAGE_TAG ?: '',
+                    alb_url: env.ALB_HOSTNAME ? "https://${env.ALB_HOSTNAME}" : '',
+                    error_message: errMsg,
+                    run_code: env.RUN_CODE ?: ''
+                ])
+                sh """
+                    curl -s -X POST "${OBSTOOL_WEBHOOK_URL}" \
+                        -H 'Content-Type: application/json' \
+                        -H "X-Webhook-Secret: ${WEBHOOK_SECRET}" \
+                        -d '${payload}' || echo 'Webhook notification failed (non-fatal)'
+                """
+            }
+        }
+    }
+}

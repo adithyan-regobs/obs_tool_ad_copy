@@ -1,0 +1,14 @@
+{
+  "core":{
+    "mysqldb": [
+    
+  ],
+  "psqldb": [
+   
+  ]
+},
+"falcon":{
+  "mysqldb": [
+   ]
+  }
+}

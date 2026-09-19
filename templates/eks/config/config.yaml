@@ -1,0 +1,16 @@
+# Service name (identifier) - used to derive ECR repo, EKS deployment names, etc.
+service_name: {{SERVICE_NAME}}
+
+language: {{LANGUAGE}}
+{{VERSION_LINE}}
+# aws_region: [ ap-south-1, eu-west-2, us-east-1 ]
+
+# Path to Dockerfile (relative to repo root)
+dockerfile_path: {{DOCKERFILE_PATH}}
+
+# Build configuration
+build:
+  type: {{BUILD_TYPE}}
+  skip_tests: {{SKIP_TESTS}}
+  skip_checks: {{SKIP_CHECKS}}
+{{GRADLE_CONFIG}}{{MAVEN_CONFIG}}

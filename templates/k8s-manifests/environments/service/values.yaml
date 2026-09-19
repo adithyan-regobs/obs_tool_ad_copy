@@ -1,0 +1,20 @@
+# {{ENVIRONMENT_DISPLAY}} {{REGION}} deployment overrides for {{SERVICE_NAME}}.
+image:
+  tag: {{IMAGE_TAG}}
+# Mirrors infra-v2 ECS sizing (cpu={{CPU_REQUEST}}, memory={{MEMORY_REQUEST}}).
+# Starting with request == limit (Guaranteed QoS) for predictable scheduling.
+resources:
+  requests:
+    cpu: {{CPU_REQUEST}}
+    memory: {{MEMORY_REQUEST}}
+  limits:
+    cpu: {{CPU_LIMIT}}
+    memory: {{MEMORY_LIMIT}}
+
+ingress:
+  groupOrder: "{{INGRESS_GROUP_ORDER}}"
+
+{{KEDA_BLOCK}}
+
+scheduling:
+  capacityType: {{COMPUTE}}

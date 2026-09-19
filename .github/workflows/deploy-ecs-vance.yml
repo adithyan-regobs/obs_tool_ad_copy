@@ -1,0 +1,102 @@
+name: Deploy Backend to ECS
+
+on:
+  push:
+    branches:
+      - vance
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REGISTRY: 878097483768.dkr.ecr.ap-south-1.amazonaws.com
+  ECR_REPOSITORY: vance-core-stage-01-devlift-repo
+  ECS_CLUSTER: devlift-cluster
+  ECS_SERVICE: devlift-service
+  ECS_WORKER_SERVICE: temporal-worker
+  AWS_ROLE_ARN: arn:aws:iam::878097483768:role/vance-core-stage-01-devlift-github-role
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-${{ github.run_id }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata for Docker
+        id: meta
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          IMAGE_TAG="${{ github.ref_name }}-${SHORT_SHA}"
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image to ECR
+        env:
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          docker build -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG .
+          docker tag ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+
+          echo "Image pushed: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG"
+
+      - name: Deploy to ECS
+        run: |
+          echo "Forcing new deployment for ECS services..."
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_WORKER_SERVICE }} \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+          echo "Deployment triggered successfully!"
+          echo "Cluster: ${{ env.ECS_CLUSTER }}"
+          echo "Services: ${{ env.ECS_SERVICE }}, ${{ env.ECS_WORKER_SERVICE }}"
+
+      - name: Wait for deployment to stabilize
+        run: |
+          echo "Waiting for ECS services to stabilize (this may take a few minutes)..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} ${{ env.ECS_WORKER_SERVICE }} \
+            --region ${{ env.AWS_REGION }}
+          echo "Services are stable!"
+
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo "========================================"
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+          fi
+          echo "Image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }}"
+          echo "Cluster: ${{ env.ECS_CLUSTER }}"
+          echo "Services: ${{ env.ECS_SERVICE }}, ${{ env.ECS_WORKER_SERVICE }}"
+          echo "========================================"

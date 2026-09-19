@@ -1,0 +1,17 @@
+# ------------------------------------------------------------------
+# {{SERVICE_NAME}} chart overrides
+# Environment values: environments/<env>/<region>/services/{{SERVICE_NAME}}/values.yaml
+# Image tag is injected per-env by the GitOps image-tag flow.
+# ------------------------------------------------------------------
+appName: {{SERVICE_NAME}}
+kind: {{KIND}}
+podType: core-platform
+containerPort: {{CONTAINER_PORT}}
+healthCheckPath: {{HEALTH_CHECK_PATH}}
+# ALB listener path (default would be /<appName> = /{{SERVICE_NAME}})
+ingress:
+  path: {{SERVICE_PATH}}
+
+# Image runs as root until Dockerfile adds USER 1000:1000.
+podSecurityContext:       { runAsNonRoot: false }
+containerSecurityContext: { runAsNonRoot: false }

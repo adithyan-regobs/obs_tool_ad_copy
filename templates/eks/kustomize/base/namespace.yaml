@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{NAMESPACE}}
+  labels:
+    name: {{NAMESPACE}}
+    environment: {{ENVIRONMENT}}
+    devlift.ai/tenant: {{TENANT_CODE}}

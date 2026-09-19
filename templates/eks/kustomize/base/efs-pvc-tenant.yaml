@@ -1,0 +1,33 @@
+# Static PV + PVC for tenant namespace — shares the same EFS access point
+# as model-download-ns so models downloaded once are visible everywhere.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: efs-model-store-{{NAMESPACE}}
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef:
+    namespace: {{NAMESPACE}}
+    name: model-store-pvc
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: {{EFS_VOLUME_HANDLE}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-store-pvc
+  namespace: {{NAMESPACE}}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: efs-model-store-{{NAMESPACE}}
+  resources:
+    requests:
+      storage: 500Gi

@@ -1,0 +1,92 @@
+model
+  schema 1.1
+
+# ── DevLift RBAC — phase 1 authorization model ───────────────────────────────
+#
+# MIRROR, NOT THE AUTHORITY. obs_tool no longer talks to OpenFGA: it proxies
+# every check to devlift-secret-config-manager over
+# `/api/v1/internal/authz/check`, and that service holds the only SDK client.
+# The publishable copy therefore lives with the client that publishes it, at
+# devlift-secret-config-manager-vance/app/core/authz/rbac-model.fga. This file
+# is kept so obs_tool's guards can be read against the vocabulary they use;
+# change the other one first.
+#
+# Verified equal to published model 01M0G32F1SFJTZMXMH16J2G963 on store
+# 01KZCADQJ1Q3HPAW6EN4QWD8WR.
+#
+# Four types plus `tenant`. Authorization is checked at the SERVICE level only,
+# where `service` is keyed by service_configs.code (sc-…) — the same code the
+# secrets/configs APIs receive as resource_code.
+#
+# aspora.fga is KEPT as the reference for the fuller hierarchy (tenant →
+# workspace → product → environment → geo_loc, plus infra_mst and per-secret
+# objects) that comes back in a later phase. It is NOT publishable — see the
+# header on that file.
+#
+# ROLES are NOT modelled here. They are created through the authz UI, which
+# declares the role relation on the selected type and every level below it,
+# then rewrites the permissions below to name it. Roles are then granted to a
+# user_group at resource_group level and inherited by every service under it.
+#
+# PERMISSIONS map 1:1 onto the guarded routes:
+#   can_view_secret    GET  /secrets/{resource_code}/with-values
+#   can_write_secret   POST /secrets/{resource_code}/save
+#   can_view_config    GET  /configs/{resource_code}/with-values
+#   can_write_config   POST /configs/{resource_code}/save
+#   can_deploy         POST /deployments/multiple-deploy   (obs_tool)
+#   can_view_gateway   GET  /kong-route-configs/gateway/by-config/{code}        (obs_tool)
+#   can_write_gateway  POST /kong-route-configs/gateway/by-config/{code}/save   (obs_tool)
+#   can_view_settings  GET  /service-configs/by-code/{code}                     (obs_tool)
+#   can_write_settings PUT  /service-configs/update-service-config/{code}       (obs_tool)
+#                      POST /transaction/service-settings/{transaction_code}    (obs_tool)
+#   can_approve        POST /approvals/{code}/approve | reject | request-changes (obs_tool)
+#   can_deploy also gates POST /transaction-queue/by-config/{code}/create-pr
+#   (obs_tool); the sibling /by-infra/{code}/create-pr is authentication-only
+#   until infra_mst enters the model.
+#
+# can_deploy is BLANKET by decision: holding it deploys everything staged for
+# the service — secrets, configs, settings and kong together. Only viewing and
+# saving are per-area.
+#
+# can_approve hangs off `approver`, NOT off `admin`, and that separation is the
+# whole maker-checker guarantee: an admin may write and deploy but cannot
+# approve their own change. Rewriting it to `admin` would let one person take a
+# change from draft to production unreviewed. The approvals flow reads this
+# relation directly (ApprovalService.flags_for), so removing it does not
+# loosen the gate — it fails every check closed and no change can be approved
+# at all.
+
+type user
+
+type user_group
+  relations
+    define member: [user, user_group#member]
+
+# Structure only. `manage_authorization` gates the authz admin console itself —
+# who may grant and revoke the tuples below.
+type tenant
+  relations
+    define manage_authorization: [user]
+    define member: [user]
+
+type resource_group
+  relations
+    define admin: [user, user_group#member]
+    define approver: [user, user_group#member]
+
+type service
+  relations
+    define parent: [resource_group]
+    define admin: [user, user_group#member] or admin from parent
+    define approver: [user, user_group#member] or approver from parent
+
+    define can_approve: approver
+    define can_deploy: admin
+    define can_view_config: admin
+    define can_view_secret: admin
+    define can_write_config: admin
+    define can_write_secret: admin
+    define can_view_gateway: admin
+    define can_write_gateway: admin
+    define can_view_settings: admin
+    define can_write_settings: admin

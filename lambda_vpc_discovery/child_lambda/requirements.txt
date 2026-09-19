@@ -1,0 +1,4 @@
+# Child Lambda — EKS Workload Discovery
+# boto3/botocore are pre-installed in AWS Lambda runtime (no need to bundle)
+# All other dependencies are Python standard library (json, ssl, base64, urllib)
+# This file is intentionally minimal — only add here if you need extra packages

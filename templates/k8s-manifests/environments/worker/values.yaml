@@ -1,0 +1,15 @@
+# {{ENVIRONMENT_DISPLAY}} {{REGION}} deployment overrides for {{SERVICE_NAME_UPPER}}.
+
+image:
+  tag: {{IMAGE_TAG}}
+
+resources:
+  requests:
+    cpu: {{CPU_REQUEST}}
+    memory: {{MEMORY_REQUEST}}
+  limits:
+    cpu: {{CPU_LIMIT}}
+    memory: {{MEMORY_LIMIT}}
+
+scheduling:
+  capacityType: {{COMPUTE}}

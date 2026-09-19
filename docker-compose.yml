@@ -1,0 +1,164 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16
+    container_name: obstool_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-mysecretpassword}
+      POSTGRES_DB: ${DB_NAME:-app_db}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - obstool_network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: obstool_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - obstool_network
+    restart: unless-stopped
+
+  # OpenFGA datastore — authorization models and tuples.
+  # Its own database, separate from the app's, mirroring production.
+  openfga-postgres:
+    image: postgres:16
+    container_name: obstool_openfga_postgres
+    environment:
+      POSTGRES_USER: ${FGA_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${FGA_DB_PASSWORD:-mysecretpassword}
+      POSTGRES_DB: openfga
+    ports:
+      # 5433 on the host — 5432 is the app database. Exposed so you can inspect
+      # tuples with pgAdmin; the app itself never connects here.
+      - "${FGA_DB_PORT:-5433}:5432"
+    volumes:
+      - openfga_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${FGA_DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - obstool_network
+    restart: unless-stopped
+
+  # Creates OpenFGA's schema, then exits. Runs once, before the server.
+  openfga-migrate:
+    image: openfga/openfga:latest
+    container_name: obstool_openfga_migrate
+    command: migrate
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://${FGA_DB_USER:-postgres}:${FGA_DB_PASSWORD:-mysecretpassword}@openfga-postgres:5432/openfga?sslmode=disable
+    depends_on:
+      openfga-postgres:
+        condition: service_healthy
+    networks:
+      - obstool_network
+    restart: on-failure
+
+  # The authorization server. The backend reaches it over HTTP only.
+  # Local development only — production already runs its own OpenFGA.
+  openfga:
+    image: openfga/openfga:latest
+    container_name: obstool_openfga
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://${FGA_DB_USER:-postgres}:${FGA_DB_PASSWORD:-mysecretpassword}@openfga-postgres:5432/openfga?sslmode=disable
+      OPENFGA_LOG_FORMAT: json
+    ports:
+      # 8090 matches the FGA_API_URL default in app/core/config.py, so the
+      # backend can also run outside Docker against this same server.
+      - "8090:8080"   # HTTP API
+      - "8091:8081"   # gRPC
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=localhost:8081"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - obstool_network
+    restart: unless-stopped
+
+  # FastAPI Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: obstool_backend
+    environment:
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-mysecretpassword}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-app_db}
+      DATADOG_API_KEY: ${DATADOG_API_KEY}
+      DATADOG_APP_KEY: ${DATADOG_APP_KEY}
+      DATADOG_BASE_URL: ${DATADOG_BASE_URL:-https://api.datadoghq.com/api/v1/monitor}
+      REDIS_ENABLED: ${REDIS_ENABLED:-true}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: ${REDIS_DB:-0}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_TIMEOUT: ${REDIS_TIMEOUT:-5}
+      # Inside the network the server is reached by service name.
+      FGA_API_URL: ${FGA_API_URL:-http://openfga:8080}
+      # Minted once by `fga store create` — put the printed id in .env.
+      FGA_STORE_ID: ${FGA_STORE_ID:-}
+      # Optional. Left empty (as in production) OpenFGA resolves the store's
+      # LATEST model on every call. Set it only to pin a version or roll back.
+      FGA_MODEL_ID: ${FGA_MODEL_ID:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      openfga:
+        condition: service_healthy
+    networks:
+      - obstool_network
+    restart: unless-stopped
+    volumes:
+      - ./app:/app/app:ro  # Mount app directory for development
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+networks:
+  obstool_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  openfga_postgres_data:
+    driver: local

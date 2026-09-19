@@ -1,0 +1,109 @@
+# ObsTool Backend Dockerfile for ECS Deployment with EKS MCP Server
+FROM python:3.12-slim
+
+# Set working directory
+WORKDIR /app
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    git \
+    curl \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================
+# Install AWS CLI v2
+# ============================================
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && \
+    unzip awscliv2.zip && \
+    ./aws/install && \
+    rm -rf aws awscliv2.zip && \
+    aws --version
+
+# ============================================
+# Install the OpenFGA CLI
+# ============================================
+# app/core/authz/modeledit.py shells out to `fga model transform` to convert
+# the .fga DSL into the JSON the OpenFGA API accepts. Without this binary the
+# console reports the model as read-only and role/permission creation returns
+# 503 — tuple operations (grants, users, resources) still work, they are SDK.
+COPY --from=openfga/cli:latest /fga /usr/local/bin/fga
+RUN fga --version
+
+# ============================================
+# Install kubectl for EKS deployment
+# ============================================
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+    && chmod +x kubectl \
+    && mv kubectl /usr/local/bin/kubectl \
+    && kubectl version --client
+
+
+# ============================================
+# Install Terraform (required by Terragrunt)
+# ============================================
+ARG TERRAFORM_VERSION=1.6.6
+RUN curl -Lo terraform.zip https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip && \
+    unzip terraform.zip && \
+    mv terraform /usr/local/bin/ && \
+    rm terraform.zip && \
+    terraform --version
+
+# ============================================
+# Install Terragrunt
+# ============================================
+ARG TERRAGRUNT_VERSION=v0.54.16
+RUN curl -Lo /usr/local/bin/terragrunt https://github.com/gruntwork-io/terragrunt/releases/download/${TERRAGRUNT_VERSION}/terragrunt_linux_amd64 && \
+    chmod +x /usr/local/bin/terragrunt && \
+    terragrunt --version
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Make entrypoint executable
+RUN chmod +x entrypoint.sh
+
+# Create a non-root user
+# Note: For ECS with EKS access, we keep as root to allow kubectl operations
+# If you need non-root, ensure proper IAM task role and RBAC permissions
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app
+
+# For ECS deployments that need kubectl access, run as root
+# Comment out the USER line below if you need root access for kubectl
+# USER appuser
+
+# Set entrypoint to run migrations and configure kubectl
+ENTRYPOINT ["./entrypoint.sh"]
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/health')"
+
+# Run the application with Gunicorn + Uvicorn workers
+CMD ["gunicorn", "app.main:app", \
+     "--bind", "0.0.0.0:8000", \
+     "--workers", "4", \
+     "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "--preload", \
+     "--timeout", "300", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-"]

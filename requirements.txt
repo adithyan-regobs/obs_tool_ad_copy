@@ -1,0 +1,68 @@
+# Core
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+gunicorn==26.0.0
+python-dotenv==1.0.0
+requests==2.34.2
+greenlet==3.5.4
+
+# Database
+sqlalchemy==2.0.25
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+psycopg[pool]==3.3.4
+alembic==1.13.1
+
+# Validation
+pydantic==2.13.4
+pydantic-settings==2.14.2
+aiosqlite==0.22.1
+email-validator==2.3.0
+
+# Clerk SDK & JWT
+clerk-backend-api==3.3.1
+pyjwt[crypto]==2.13.0
+svix==2.0.0
+
+# AWS SDK
+boto3==1.40.61
+aioboto3==15.5.0
+
+# Async File I/O
+aiofiles==25.1.0
+
+# LangChain & AI
+langchain==1.3.14
+langchain-openai==1.4.1
+langgraph==1.2.10
+langgraph-checkpoint-postgres==3.1.1
+langgraph-cli[inmem]==0.4.31
+langchain-mcp-adapters==0.3.0
+langfuse==4.14.2
+openai==2.53.0
+mcp==1.29.0
+sse-starlette==2.4.1
+
+# Vector Database (disabled — uncomment to re-enable Qdrant)
+# qdrant-client>=1.7.0
+
+# Redis Cache (for multi-worker state management)
+redis==8.1.0
+
+# Slack Integration
+slack-bolt==1.30.0
+slack-sdk==3.43.0
+aiolimiter==1.1.0
+aiohttp==3.14.3
+
+# Testing
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1
+# moto[secretsmanager,ssm,sts]>=5.0.0
+
+# GitHub Secrets Encryption
+PyNaCl==1.6.2
+
+# Temporal Workflow Engine
+temporalio==1.31.0

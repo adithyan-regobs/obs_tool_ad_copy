@@ -1,0 +1,263 @@
+# ============================================================================
+# ObsTool Backend - Python/FastAPI .gitignore
+# ============================================================================
+
+# ============================================================================
+# Python
+# ============================================================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+.ENV
+.env
+env.bak/
+venv.bak/
+virtualenv/
+
+
+# API Keys and credentials
+*credentials*.json
+*secrets*.json
+*.pem
+*.key
+*.cert
+
+# Datadog credentials (CRITICAL - DO NOT COMMIT!)
+*datadog*key*
+*dd-api-key*
+*dd-application-key*
+
+# ============================================================================
+# Database
+# ============================================================================
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.pgdata
+*.dump
+*.sql.gz
+
+# Database migrations (if using Alembic)
+# alembic/versions/*.py  # Uncomment if you want to ignore migration files
+
+# ============================================================================
+# Logs
+# ============================================================================
+logs/
+*.log
+*.log.*
+log/
+app.log
+debug.log
+error.log
+
+# ============================================================================
+# Testing
+# ============================================================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+test-results/
+junit.xml
+
+# Temporary manual test files (only at root level, not in tests/ directory)
+test_*.json
+/test_*.py
+/test_sqs_s3_chat.py
+/test_datadog_terragrunt.py
+/test_append_logic.py
+/test_bracket_matching.py
+/test_monitor_parsing.py
+
+# Infra Chat Agent test files
+app/infra_chat_agent/test_*.py
+tests/unit/test_vector_parameter_matcher.py
+
+# ============================================================================
+# IDEs & Editors
+# ============================================================================
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# ============================================================================
+# Operating System Files
+# ============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+
+# ============================================================================
+# Application Specific
+# ============================================================================
+# Static files
+staticfiles/
+static_root/
+media/
+
+# Cache
+.cache/
+*.cache
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.ruff_cache/
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.bak
+*.backup
+
+# Lambda deployment zip packages
+lambda_vpc_discovery/vpc-discovery-final*.zip
+
+# ============================================================================
+# FastAPI / Uvicorn
+# ============================================================================
+# Upload directories
+uploads/
+files/
+
+# Session files
+sessions/
+
+# ============================================================================
+# Documentation
+# ============================================================================
+docs/_build/
+docs/site/
+site/
+SQS_IMPLEMENTATION_SUMMARY.md
+
+# ============================================================================
+# CI/CD
+# ============================================================================
+.github/workflows/*.secrets
+.gitlab-ci.local.yml
+
+# ============================================================================
+# Security
+# ============================================================================
+# Never commit these!
+*.private
+*.secret
+*.confidential
+auth.json
+tokens.json
+service-account*.json
+jwt_secret.txt
+
+# ============================================================================
+# Misc
+# ============================================================================
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Profiling
+*.prof
+*.lprof
+*.pstats
+
+# Coverage reports
+.coverage
+htmlcov/
+
+# Type checking
+.pytype/
+pyrightconfig.json
+
+# Ruff
+.ruff_cache/
+
+# ============================================================================
+# Test & Documentation Files
+# ============================================================================
+# SQS implementation test files
+SQS_IMPLEMENTATION_SUMMARY.md
+test_sqs_s3_chat.py
+deploy/.env
+deploy/
+
+*.md
+# LangGraph API cache
+.langgraph_api/
+.devlift
+
+file_structure.txt
+.devlift

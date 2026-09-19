@@ -1,0 +1,94 @@
+name: Deploy {{SERVICE_NAME}} to {{ENVIRONMENT_NAME}} (kubectl)
+
+on:
+  push:
+    branches:
+      - {{BRANCH}}
+    paths:
+      - 'eks-services/{{SERVICE_NAME_SANITIZED}}/deployment/**'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: {{AWS_REGION}}
+  SERVICE_NAME: {{SERVICE_NAME}}
+  ENVIRONMENT: {{ENVIRONMENT}}
+  NAMESPACE: {{NAMESPACE}}
+  DEPLOY_PATH: eks-services/{{SERVICE_NAME_SANITIZED}}/deployment
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+{{GITHUB_ENVIRONMENT}}
+    steps:
+      - name: Checkout infra repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.0
+        with:
+          role-to-assume: {{AWS_ROLE_ARN}}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: Devlift-${{ github.run_id }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name {{EKS_CLUSTER_NAME}}
+
+      - name: Notify start
+        run: |
+          curl -s -X POST "{{OBSTOOL_WEBHOOK_URL}}" \
+            -H 'Content-Type: application/json' \
+            -H "X-Webhook-Secret: {{WEBHOOK_SECRET}}" \
+            -d '{"job_name":"${{ github.workflow }}","build_number":${{ github.run_number }},"status":"IN_PROGRESS","build_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}","commit_sha":"${{ github.sha }}","stage":"deploying","run_code":""}' \
+            || true
+
+      - name: Apply infrastructure manifests
+        run: |
+          kubectl apply -f ${{ env.DEPLOY_PATH }}/00-namespace.yaml
+          kubectl apply -f ${{ env.DEPLOY_PATH }}/01-serviceaccount.yaml
+          kubectl apply -f ${{ env.DEPLOY_PATH }}/03-service.yaml
+          kubectl apply -f ${{ env.DEPLOY_PATH }}/06-ingress.yaml
+          [ -f ${{ env.DEPLOY_PATH }}/07-secret-provider-class.yaml ] && kubectl apply -f ${{ env.DEPLOY_PATH }}/07-secret-provider-class.yaml || true
+
+      - name: Apply deployment
+        run: |
+          kubectl apply -f ${{ env.DEPLOY_PATH }}/02-deployment.yaml
+
+      - name: Verify rollout
+        run: |
+          kubectl rollout status deployment/${{ env.SERVICE_NAME }} \
+            --namespace=${{ env.NAMESPACE }} --timeout={{VERIFY_TIMEOUT}}
+
+      - name: Get ALB URL
+        id: alb
+        if: success()
+        run: |
+          for i in $(seq 1 10); do
+            ALB=$(kubectl get ingress ${{ env.SERVICE_NAME }}-ingress -n ${{ env.NAMESPACE }} \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [ -n "$ALB" ]; then
+              echo "alb_url=https://$ALB" >> $GITHUB_OUTPUT
+              echo "ALB hostname ready: $ALB"
+              break
+            fi
+            echo "Waiting for ALB hostname... (attempt $i/10)"
+            sleep 15
+          done
+
+      - name: Notify completion
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            STATUS="SUCCESS"
+          else
+            STATUS="FAILURE"
+          fi
+          curl -s -X POST "{{OBSTOOL_WEBHOOK_URL}}" \
+            -H 'Content-Type: application/json' \
+            -H "X-Webhook-Secret: {{WEBHOOK_SECRET}}" \
+            -d "{\"job_name\":\"${{ github.workflow }}\",\"build_number\":${{ github.run_number }},\"status\":\"${STATUS}\",\"build_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",\"commit_sha\":\"${{ github.sha }}\",\"alb_url\":\"${{ steps.alb.outputs.alb_url || '' }}\",\"run_code\":\"\"}" \
+            || true
