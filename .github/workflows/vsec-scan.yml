@@ -43,14 +43,14 @@ jobs:
       - name: Build image
         run: docker build -f Dockerfile.ecs -t "$IMAGE" .
 
-      - name: Scan container image
+      - name: vsec container scan
         run: vsec scan "$IMAGE" --fail-on critical
 
-      - name: Scan dependencies
+      - name: vsec dependency scan
         if: always()
         run: vsec oss . --name "${{ github.repository }}" --fail-on critical
 
-      - name: Scan source for secrets and misconfiguration
+      - name: vsec code scan (secrets, misconfig)
         if: always()
         run: vsec code . --name "${{ github.repository }}" --tracked-only --fail-on critical
 
