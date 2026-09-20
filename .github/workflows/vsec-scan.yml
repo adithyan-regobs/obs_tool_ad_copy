@@ -38,7 +38,7 @@ jobs:
         # TestPyPI while the CLI is in preview; switch to `pip install vsec` on release.
         # Semgrep is the SAST engine behind `vsec code --sast`.
         run: |
-          pip install --quiet -i https://test.pypi.org/simple/ "vsec>=0.1.1"
+          pip install --quiet -i https://test.pypi.org/simple/ "vsec>=0.1.2"
           pip install --quiet semgrep
           vsec doctor
 
@@ -56,18 +56,17 @@ jobs:
           .venv/bin/pip install --quiet -r lambda_vpc_discovery/requirements.txt
           echo "resolved $(.venv/bin/pip list --format=freeze | wc -l) packages"
 
-      - name: vsec dependency scan (resolved tree)
-        run: vsec oss .venv --name "${{ github.repository }} (resolved)" --fail-on critical
+      # One scan covers both now: vsec runs `trivy fs` for the manifests and
+      # `trivy rootfs` for what the install above actually put on disk, then
+      # merges them. On this repo that is 43 packages versus 791.
+      - name: vsec dependency scan
+        run: vsec oss . --name "${{ github.repository }}" --fail-on critical
 
       - name: Build image
         run: docker build -f Dockerfile.ecs -t "$IMAGE" .
 
       - name: vsec container scan
         run: vsec scan "$IMAGE" --fail-on critical
-
-      - name: vsec dependency scan (manifests only)
-        if: always()
-        run: vsec oss . --name "${{ github.repository }}" --fail-on critical
 
       - name: vsec code scan (SAST, secrets, misconfig)
         if: always()
