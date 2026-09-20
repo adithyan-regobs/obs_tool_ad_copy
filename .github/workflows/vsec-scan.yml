@@ -1,0 +1,98 @@
+# Security gate on every pull request: container image, dependencies and
+# source folder are scanned with vsec (Trivy runs on the runner, findings are
+# uploaded to the Vendor Security Scanner server). The job fails on critical
+# findings, which blocks the PR the same way the Snyk check did.
+#
+# Required repository settings:
+#   Variables -> VSEC_SERVER   e.g. https://scanner.example.com
+#   Secrets   -> VSEC_API_KEY  key with scopes images:write and code:write
+#   Secrets   -> SNYK_TOKEN    Snyk account auth token (for the comparison steps)
+
+name: vsec security scan
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: obs_tool:pr-${{ github.event.pull_request.number || github.run_id }}
+  VSEC_SERVER: ${{ vars.VSEC_SERVER }}
+  VSEC_API_KEY: ${{ secrets.VSEC_API_KEY }}
+
+jobs:
+  vsec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+          trivy --version
+
+      - name: Install vsec and Semgrep
+        # TestPyPI while the CLI is in preview; switch to `pip install vsec` on release.
+        # Semgrep is the SAST engine behind `vsec code --sast`.
+        run: |
+          pip install --quiet -i https://test.pypi.org/simple/ "vsec>=0.1.2"
+          pip install --quiet semgrep
+          vsec doctor
+
+      # Neither scanner can see transitive dependencies from requirements.txt
+      # alone: it lists 42 direct packages and the resolved tree is ~140. Snyk
+      # refuses to scan without them ("Missing required packages") and vsec
+      # silently reports only the 42. Installing here gives both the real tree,
+      # and it happens before the image is built so a bad dependency fails the
+      # PR without anything being published.
+      - name: Resolve dependency tree
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements.txt
+          .venv/bin/pip install --quiet -r lambda_vpc_discovery/requirements.txt
+          echo "resolved $(.venv/bin/pip list --format=freeze | wc -l) packages"
+
+      # One scan covers both now: vsec runs `trivy fs` for the manifests and
+      # `trivy rootfs` for what the install above actually put on disk, then
+      # merges them. On this repo that is 43 packages versus 791.
+      - name: vsec dependency scan
+        run: vsec oss . --name "${{ github.repository }}" --fail-on critical
+
+      - name: Build image
+        run: docker build -f Dockerfile.ecs -t "$IMAGE" .
+
+      - name: vsec container scan
+        run: vsec scan "$IMAGE" --fail-on critical
+
+      - name: vsec code scan (SAST, secrets, misconfig)
+        if: always()
+        run: vsec code . --sast --name "${{ github.repository }}" --tracked-only --fail-on critical,high
+
+      # ── Snyk, same image and same repo, for a side-by-side on the PR ────────
+      - name: Install Snyk CLI
+        if: always()
+        run: npm install -g snyk
+
+      - name: Snyk container test
+        if: always()
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk container test "$IMAGE" --severity-threshold=critical
+
+      - name: Snyk open source test
+        if: always()
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        # --command points Snyk at the venv interpreter, which is where the
+        # packages it needs to resolve the tree actually live.
+        run: snyk test --all-projects --command=.venv/bin/python --severity-threshold=critical
+
+      - name: Snyk code test
+        if: always()
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk code test --severity-threshold=high
