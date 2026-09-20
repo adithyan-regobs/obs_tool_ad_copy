@@ -6,6 +6,7 @@
 # Required repository settings:
 #   Variables -> VSEC_SERVER   e.g. https://scanner.example.com
 #   Secrets   -> VSEC_API_KEY  key with scopes images:write and code:write
+#   Secrets   -> SNYK_TOKEN    Snyk account auth token (for the comparison steps)
 
 name: vsec security scan
 
@@ -52,3 +53,26 @@ jobs:
       - name: Scan source for secrets and misconfiguration
         if: always()
         run: vsec code . --name "${{ github.repository }}" --tracked-only --fail-on critical
+
+      # ── Snyk, same image and same repo, for a side-by-side on the PR ────────
+      - name: Install Snyk CLI
+        if: always()
+        run: npm install -g snyk
+
+      - name: Snyk container test
+        if: always()
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk container test "$IMAGE" --severity-threshold=critical
+
+      - name: Snyk open source test
+        if: always()
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --all-projects --severity-threshold=critical
+
+      - name: Snyk code test
+        if: always()
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk code test --severity-threshold=high
