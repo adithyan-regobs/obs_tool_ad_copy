@@ -1,0 +1,54 @@
+# Security gate on every pull request: container image, dependencies and
+# source folder are scanned with vsec (Trivy runs on the runner, findings are
+# uploaded to the Vendor Security Scanner server). The job fails on critical
+# findings, which blocks the PR the same way the Snyk check did.
+#
+# Required repository settings:
+#   Variables -> VSEC_SERVER   e.g. https://scanner.example.com
+#   Secrets   -> VSEC_API_KEY  key with scopes images:write and code:write
+
+name: vsec security scan
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: obs_tool:pr-${{ github.event.pull_request.number || github.run_id }}
+  VSEC_SERVER: ${{ vars.VSEC_SERVER }}
+  VSEC_API_KEY: ${{ secrets.VSEC_API_KEY }}
+
+jobs:
+  vsec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+          trivy --version
+
+      - name: Install vsec
+        # TestPyPI while the CLI is in preview; switch to `pip install vsec` on release.
+        run: |
+          pip install --quiet -i https://test.pypi.org/simple/ vsec
+          vsec doctor
+
+      - name: Build image
+        run: docker build -f Dockerfile.ecs -t "$IMAGE" .
+
+      - name: Scan container image
+        run: vsec scan "$IMAGE" --fail-on critical
+
+      - name: Scan dependencies
+        if: always()
+        run: vsec oss . --name "${{ github.repository }}" --fail-on critical
+
+      - name: Scan source for secrets and misconfiguration
+        if: always()
+        run: vsec code . --name "${{ github.repository }}" --tracked-only --fail-on critical
